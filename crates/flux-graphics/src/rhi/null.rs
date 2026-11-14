@@ -4,6 +4,7 @@
 //! тестировать Render Graph, TransferSystem и бюджет без GPU (ADR-0005).
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use flux_core::memory::MemoryTag;
 
@@ -26,6 +27,66 @@ fn is_host_visible(usage: BufferUsage) -> bool {
     usage.transfer_src
         && usage.transfer_dst
         && !(usage.vertex || usage.index || usage.uniform || usage.storage || usage.indirect)
+}
+
+/// Содержимое ресурсов Null: bit-exact эмуляция памяти для readback-тестов.
+#[derive(Clone, Debug, Default)]
+struct NullMemory {
+    buffers: BTreeMap<u64, Vec<u8>>,
+    images: BTreeMap<u64, NullImage>,
+}
+
+/// Содержимое изображения Null: дескриптор и байты.
+#[derive(Clone, Debug)]
+struct NullImage {
+    desc: GpuImageDesc,
+    bytes: Vec<u8>,
+}
+
+type SharedMemory = Arc<Mutex<NullMemory>>;
+
+fn lock_memory(memory: &SharedMemory) -> MutexGuard<'_, NullMemory> {
+    memory
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Пиксель clear-цвета в байтах формата; depth — нули.
+fn clear_pixel(format: TextureFormat, color: [f32; 4]) -> Vec<u8> {
+    fn channel(value: f32) -> u8 {
+        (value.clamp(0.0, 1.0) * 255.0).round() as u8
+    }
+    let [r, g, b, a] = color.map(channel);
+    match format {
+        TextureFormat::Rgba8Srgb | TextureFormat::Rgba8Unorm => vec![r, g, b, a],
+        TextureFormat::Bgra8Srgb => vec![b, g, r, a],
+        TextureFormat::R8Unorm => vec![r],
+        TextureFormat::Rgba16Float => color
+            .iter()
+            .flat_map(|value| f32_to_f16_bits(*value).to_le_bytes())
+            .collect(),
+        TextureFormat::D32Float => 0.0f32.to_le_bytes().to_vec(),
+    }
+}
+
+/// IEEE-754 binary16: достаточно для цветов в `[0, 1]` (детерминированно).
+fn f32_to_f16_bits(value: f32) -> u16 {
+    let bits = value.to_bits();
+    let sign = ((bits >> 16) & 0x8000) as u16;
+    let exponent = ((bits >> 23) & 0xff) as i32;
+    let mantissa = bits & 0x007f_ffff;
+    if exponent == 0xff {
+        return sign | 0x7c00;
+    }
+    let unbiased = exponent - 127;
+    if unbiased > 15 {
+        return sign | 0x7c00;
+    }
+    if unbiased < -14 {
+        return sign;
+    }
+    let half_exponent = ((unbiased + 15) as u16) << 10;
+    sign | half_exponent | ((mantissa >> 13) as u16)
 }
 
 /// Дескрипторный набор null-устройства: layout и записанные ресурсы.
@@ -144,7 +205,7 @@ pub struct NullDevice {
     pipelines: BTreeMap<u64, PipelineDesc>,
     query_pools: BTreeMap<u64, u32>,
     descriptor_sets: BTreeMap<u64, NullDescriptorSet>,
-    buffer_contents: BTreeMap<u64, Vec<u8>>,
+    memory: SharedMemory,
     buffer_leases: BTreeMap<u64, VramLease>,
     image_leases: BTreeMap<u64, VramLease>,
     allocator: NullVramAllocator,
@@ -175,7 +236,7 @@ impl NullDevice {
             pipelines: BTreeMap::new(),
             query_pools: BTreeMap::new(),
             descriptor_sets: BTreeMap::new(),
-            buffer_contents: BTreeMap::new(),
+            memory: SharedMemory::default(),
             buffer_leases: BTreeMap::new(),
             image_leases: BTreeMap::new(),
             allocator: NullVramAllocator::new(total),
@@ -298,6 +359,7 @@ impl RhiDevice for NullDevice {
         if let Some(lease) = self.buffer_leases.remove(&id.0) {
             self.allocator.free(lease);
         }
+        lock_memory(&self.memory).buffers.remove(&id.0);
         true
     }
 
@@ -320,6 +382,15 @@ impl RhiDevice for NullDevice {
         let lease = self.allocator.allocate(bytes, MemoryTag::Rendering)?;
         let id = self.next_image;
         self.next_image = self.next_image.wrapping_add(1);
+        let byte_len = usize::try_from(bytes)
+            .map_err(|_| RhiError::validation("image size exceeds address space"))?;
+        lock_memory(&self.memory).images.insert(
+            id,
+            NullImage {
+                desc: *desc,
+                bytes: vec![0; byte_len],
+            },
+        );
         self.images.insert(id, *desc);
         self.image_leases.insert(id, lease);
         Ok(ImageId(id))
@@ -332,6 +403,7 @@ impl RhiDevice for NullDevice {
         if let Some(lease) = self.image_leases.remove(&id.0) {
             self.allocator.free(lease);
         }
+        lock_memory(&self.memory).images.remove(&id.0);
         true
     }
 
@@ -490,10 +562,8 @@ impl RhiDevice for NullDevice {
         }
         let size = usize::try_from(desc.size)
             .map_err(|_| RhiError::validation("buffer size exceeds address space"))?;
-        let contents = self
-            .buffer_contents
-            .entry(id.0)
-            .or_insert_with(|| vec![0; size]);
+        let mut memory = lock_memory(&self.memory);
+        let contents = memory.buffers.entry(id.0).or_insert_with(|| vec![0; size]);
         contents[offset as usize..end as usize].copy_from_slice(data);
         Ok(())
     }
@@ -506,7 +576,7 @@ impl RhiDevice for NullDevice {
         if !is_host_visible(desc.usage) {
             return Err(RhiError::validation("buffer is not host-visible"));
         }
-        if let Some(contents) = self.buffer_contents.get(&id.0) {
+        if let Some(contents) = lock_memory(&self.memory).buffers.get(&id.0) {
             return Ok(contents.clone());
         }
         let size = usize::try_from(desc.size)
@@ -520,15 +590,18 @@ impl RhiDevice for NullDevice {
             .iter()
             .map(|(id, set)| (*id, set.bindings.clone()))
             .collect();
-        Ok(Box::new(NullCommandBuffer::with_resources(
-            self.query_pools.clone(),
-            self.buffers
-                .iter()
-                .map(|(id, desc)| (*id, desc.usage))
-                .collect(),
-            self.images.keys().copied().collect(),
-            descriptor_sets,
-        )))
+        Ok(Box::new(
+            NullCommandBuffer::with_resources(
+                self.query_pools.clone(),
+                self.buffers
+                    .iter()
+                    .map(|(id, desc)| (*id, desc.usage))
+                    .collect(),
+                self.images.keys().copied().collect(),
+                descriptor_sets,
+            )
+            .with_memory(self.memory.clone()),
+        ))
     }
 
     fn create_swapchain(&mut self, desc: &SwapchainDesc) -> Result<Box<dyn Swapchain>, RhiError> {
@@ -647,6 +720,7 @@ pub struct NullCommandBuffer {
     buffers: BTreeMap<u64, BufferUsage>,
     images: BTreeSet<u64>,
     descriptor_sets: BTreeMap<u64, Vec<DescriptorBinding>>,
+    memory: Option<SharedMemory>,
 }
 
 impl NullCommandBuffer {
@@ -680,6 +754,15 @@ impl NullCommandBuffer {
             descriptor_sets,
             ..Self::default()
         }
+    }
+
+    /// Подключает общую память устройства (эмуляция содержимого ресурсов).
+    ///
+    /// Внутренний хук: содержимое ресурсов — деталь null-бэкенда, а не RHI.
+    #[must_use]
+    fn with_memory(mut self, memory: SharedMemory) -> Self {
+        self.memory = Some(memory);
+        self
     }
 
     /// Число draw-вызовов.
@@ -757,6 +840,25 @@ impl CommandBuffer for NullCommandBuffer {
         }
         self.in_pass = true;
         self.passes = self.passes.saturating_add(1);
+        if let Some(memory) = &self.memory {
+            let mut memory = lock_memory(memory);
+            for image in &desc.color_attachments {
+                if let Some(entry) = memory.images.get_mut(&image.0) {
+                    let pixel = clear_pixel(entry.desc.format, desc.clear_color);
+                    if !pixel.is_empty() {
+                        for chunk in entry.bytes.chunks_mut(pixel.len()) {
+                            let len = chunk.len().min(pixel.len());
+                            chunk[..len].copy_from_slice(&pixel[..len]);
+                        }
+                    }
+                }
+            }
+            if let Some(depth) = desc.depth_attachment {
+                if let Some(entry) = memory.images.get_mut(&depth.0) {
+                    entry.bytes.fill(0);
+                }
+            }
+        }
         Ok(())
     }
 
@@ -843,6 +945,14 @@ impl CommandBuffer for NullCommandBuffer {
         if !self.images.contains(&image.0) {
             return Err(RhiError::validation("unknown destination image"));
         }
+        if let Some(memory) = &self.memory {
+            let mut memory = lock_memory(memory);
+            let bytes = memory.buffers.get(&buffer.0).cloned().unwrap_or_default();
+            if let Some(entry) = memory.images.get_mut(&image.0) {
+                let len = entry.bytes.len().min(bytes.len());
+                entry.bytes[..len].copy_from_slice(&bytes[..len]);
+            }
+        }
         self.copies = self.copies.saturating_add(1);
         Ok(())
     }
@@ -861,6 +971,20 @@ impl CommandBuffer for NullCommandBuffer {
             return Err(RhiError::validation(
                 "copy destination must be a staging buffer",
             ));
+        }
+        if let Some(memory) = &self.memory {
+            let mut memory = lock_memory(memory);
+            let bytes = memory
+                .images
+                .get(&image.0)
+                .map(|entry| entry.bytes.clone())
+                .unwrap_or_default();
+            let destination = memory
+                .buffers
+                .entry(buffer.0)
+                .or_insert_with(|| vec![0; bytes.len()]);
+            let len = destination.len().min(bytes.len());
+            destination[..len].copy_from_slice(&bytes[..len]);
         }
         self.copies = self.copies.saturating_add(1);
         Ok(())
@@ -1236,5 +1360,138 @@ mod tests {
         assert!(device
             .update_descriptor_set(set, &[DescriptorWrite::image(0, 0, storage_only)])
             .is_err());
+    }
+
+    #[test]
+    fn render_pass_clear_is_readable_through_staging() {
+        let mut device = NullDevice::new();
+        let mut usage = TextureUsage::render_target();
+        usage.transfer_src = true;
+        let target = device
+            .create_image(
+                &GpuImageDesc::new("gbuffer", 2, 2, TextureFormat::Rgba8Unorm).with_usage(usage),
+            )
+            .unwrap();
+        let staging = device
+            .create_buffer(&GpuBufferDesc::new("readback", 16, BufferUsage::staging()))
+            .unwrap();
+
+        let mut cmd = device.create_command_buffer().unwrap();
+        cmd.begin().unwrap();
+        cmd.begin_render_pass(
+            &RenderPassDesc::new("gbuffer-pass")
+                .with_color(target)
+                .with_clear([1.0, 0.0, 0.0, 1.0]),
+        )
+        .unwrap();
+        cmd.end_render_pass().unwrap();
+        cmd.copy_image_to_buffer(target, staging).unwrap();
+        cmd.end().unwrap();
+        cmd.finish().unwrap();
+
+        let pixels = device.read_buffer(staging).unwrap();
+        assert_eq!(pixels.len(), 16);
+        for pixel in pixels.chunks_exact(4) {
+            assert_eq!(pixel, [255, 0, 0, 255]);
+        }
+    }
+
+    #[test]
+    fn buffer_to_image_copy_roundtrips() {
+        let mut device = NullDevice::new();
+        let mut usage = TextureUsage::storage();
+        usage.transfer_src = true;
+        usage.transfer_dst = true;
+        let image = device
+            .create_image(
+                &GpuImageDesc::new("storage", 2, 2, TextureFormat::Rgba8Unorm).with_usage(usage),
+            )
+            .unwrap();
+        let source = device
+            .create_buffer(&GpuBufferDesc::new("source", 16, BufferUsage::staging()))
+            .unwrap();
+        let destination = device
+            .create_buffer(&GpuBufferDesc::new(
+                "destination",
+                16,
+                BufferUsage::staging(),
+            ))
+            .unwrap();
+        let pattern: Vec<u8> = (0..16).map(|byte| byte * 3).collect();
+        device.write_buffer(source, 0, &pattern).unwrap();
+
+        let mut cmd = device.create_command_buffer().unwrap();
+        cmd.begin().unwrap();
+        cmd.copy_buffer_to_image(source, image).unwrap();
+        cmd.copy_image_to_buffer(image, destination).unwrap();
+        cmd.end().unwrap();
+        cmd.finish().unwrap();
+
+        assert_eq!(device.read_buffer(destination).unwrap(), pattern);
+    }
+
+    #[test]
+    fn clear_pixel_layout_matches_format() {
+        let mut device = NullDevice::new();
+        let mut render_usage = TextureUsage::render_target();
+        render_usage.transfer_src = true;
+        let bgra = device
+            .create_image(
+                &GpuImageDesc::new("swapchain", 1, 1, TextureFormat::Bgra8Srgb)
+                    .with_usage(render_usage),
+            )
+            .unwrap();
+        let hdr = device
+            .create_image(
+                &GpuImageDesc::new("hdr", 1, 1, TextureFormat::Rgba16Float)
+                    .with_usage(render_usage),
+            )
+            .unwrap();
+        let bgra_readback = device
+            .create_buffer(&GpuBufferDesc::new(
+                "bgra-readback",
+                4,
+                BufferUsage::staging(),
+            ))
+            .unwrap();
+        let hdr_readback = device
+            .create_buffer(&GpuBufferDesc::new(
+                "hdr-readback",
+                8,
+                BufferUsage::staging(),
+            ))
+            .unwrap();
+
+        let mut cmd = device.create_command_buffer().unwrap();
+        cmd.begin().unwrap();
+        cmd.begin_render_pass(
+            &RenderPassDesc::new("bgra-pass")
+                .with_color(bgra)
+                .with_clear([1.0, 0.0, 0.5, 1.0]),
+        )
+        .unwrap();
+        cmd.end_render_pass().unwrap();
+        cmd.begin_render_pass(
+            &RenderPassDesc::new("hdr-pass")
+                .with_color(hdr)
+                .with_clear([1.0, 0.0, 0.0, 1.0]),
+        )
+        .unwrap();
+        cmd.end_render_pass().unwrap();
+        cmd.copy_image_to_buffer(bgra, bgra_readback).unwrap();
+        cmd.copy_image_to_buffer(hdr, hdr_readback).unwrap();
+        cmd.end().unwrap();
+        cmd.finish().unwrap();
+
+        // BGRA: канал B первым; 0.5 * 255 = 127.5 → 128 (округление от нуля).
+        assert_eq!(
+            device.read_buffer(bgra_readback).unwrap(),
+            vec![128, 0, 255, 255]
+        );
+        // RGBA16F: 1.0 = 0x3C00, 0.0 = 0x0000, little-endian.
+        assert_eq!(
+            device.read_buffer(hdr_readback).unwrap(),
+            vec![0x00, 0x3C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3C]
+        );
     }
 }

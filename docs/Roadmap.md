@@ -605,11 +605,14 @@ deadzone не теряет диапазон (rescale); rebinding roundtrip че�
 - [x] RHI-контракт GPU-проходов: дескрипторные наборы (set 0, bindless),
       копирование buffer↔image и staging-readback (ADR-0039)
 - [ ] GPU-проходы G-buffer → lighting → tonemap → bloom/TAA/SSAO: sampler-ADR
-      принят (ADR-0041) и реализован в RHI (WP D3) — проходы делает WP D4
+      принят (ADR-0041) и реализован в RHI (WP D3); Null-эмуляция содержимого
+      и срез clear → copy → readback закрыты (WP D4, Null-часть) — GPU-проходы
+      ждут DXC/lavapipe (D11)
 
 **Приёмка**: ABI G-buffer и PBR/tonemap/post-формулы зафиксированы и покрыты
 тестами; Vulkan собирает PSO из SPIR-V; clearcoat добавляется keyword-ом без
-изменения layout. PSO-кадр с draw готов; GPU-проходы — следующая итерация.
+изменения layout. Срез clear → copy → readback проверяется на Null в CI;
+GPU-проходы и PSNR-эталон — после появления DXC/lavapipe (D4 + D11).
 
 ### 4.7 Шейдерные пермутации
 
@@ -1146,7 +1149,7 @@ Must-требования закрываются гейтами; Should — пр
 | D1 | 2.1, 4.3, 7.7 | Актуализация чекбоксов под фактическое состояние кода | — | Roadmap совпадает с кодом; `docs.html` пересобран |
 | D2 | 4.6 | ADR «sampler-ы»: `BindingKind::CombinedImageSampler`, read-only layout, правила перехода состояний | — | ADR принят, контракт описан в `docs/api.md` |
 | D3 | 4.6 | Вертикальный срез: запись G-buffer в storage image → copy → staging-readback на Null и Vulkan | D2 | одинаковый пиксель на обоих бэкендах, validation чистая, тест в CI |
-| D4 | 4.6 | GPU-проходы `lighting → tonemap → present-stub` в Render Graph | D3 | GPU-кадр против CPU-эталона, PSNR ≥ 60 дБ, baseline `cpu-ref` |
+| D4 | 4.6 | GPU-проходы `lighting → tonemap → present-stub` в Render Graph; Null-эмуляция содержимого ресурсов | D3 | Null: clear → copy → readback в CI; GPU: кадр против CPU-эталона, PSNR ≥ 60 дБ, baseline `cpu-ref` |
 | D5 | 4.2 | `VkSurfaceKHR` + `VkSwapchainKHR` + `present` (feature `vulkan`, raw-window-handle) | D3 | окно с кадром на GPU; resize 10× без утечек |
 | D6 | 3.1, 4.5 | Fullscreen-переходы без потери device; camera-relative в тенях/IBL по мере появления | D5 | переключение режима N раз без потери `VkDevice` |
 | D7 | 4.5, 4.8, 4.9 | Query pools по проходам → `GpuProfiler` → `FrameStats`; рантайм-применение `SettingsChange` | D3, D5 | overlay по пассам; смена пресета без рестарта |
@@ -1164,8 +1167,12 @@ Must-требования закрываются гейтами; Should — пр
 `SamplerId`, `FilterMode`/`MipmapMode`/`AddressMode`, `BindingKind::Sampler`,
 `DescriptorResource::Sampler`, `create_sampler`/`destroy_sampler` в Null и
 Vulkan, `Capabilities::supports_sampler_anisotropy`, три теста валидации.
-Срез «G-buffer → copy → readback» перенесён в D4: без реального прохода он
-проверял бы только контракт, который уже покрыт тестами. Следующий — D4.
+**D4 в работе**: Null-часть закрыта — эмуляция содержимого буферов и
+изображений, запись `clear_color`/обнуление depth в `begin_render_pass`,
+копии buffer↔image и три теста (clear → readback, roundtrip, раскладка
+форматов). GPU-часть (проходы + PSNR ≥ 60 дБ) заблокирована отсутствием DXC и
+GPU/lavapipe в CI — снимается в D11. Следующий — D5 (surface/swapchain/present),
+затем D11; после них G4 закрыт и открывается этап 5.
 
 ## План дальнейшей разработки (этапы 5–7)
 

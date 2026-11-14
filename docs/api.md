@@ -6979,15 +6979,17 @@ assert!(device.destroy_pipeline(pipeline));
 
 Создаёт набор set 0 по layout-у `DescriptorSetDesc { label, bindings }`
 (ADR-0039). `BindingKind` — `UniformBuffer`, `StorageBuffer`, `SampledImage`,
-`StorageImage`; `DescriptorBinding::with_count(n)` задаёт bindless-массив.
-Пустой layout, повтор биндинга или `count == 0` — `Validation`.
+`StorageImage`, `Sampler` (ADR-0041); `DescriptorBinding::with_count(n)` задаёт
+bindless-массив. Пустой layout, повтор биндинга или `count == 0` —
+`Validation`.
 
 #### `RhiDevice::update_descriptor_set(&mut self, id, writes) -> Result<(), RhiError>`
 
-Записывает ресурсы: `DescriptorWrite::buffer(binding, array_index, buffer)` или
-`DescriptorWrite::image(binding, array_index, image)`. Неизвестный набор/биндинг,
-индекс вне `count`, несовпадение типа ресурса и неизвестный ресурс —
-`Validation`.
+Записывает ресурсы: `DescriptorWrite::buffer(binding, array_index, buffer)`,
+`DescriptorWrite::image(binding, array_index, image)` или
+`DescriptorWrite::sampler(binding, array_index, sampler)`. Неизвестный
+набор/биндинг, индекс вне `count`, несовпадение типа ресурса и неизвестный
+ресурс — `Validation`.
 
 Набор не должен быть в полёте: наборы и staging-буферы живут в кольце
 `frames_in_flight`, обновление — на границе acquire (ADR-0039).
@@ -7378,18 +7380,35 @@ assert_eq!(cmd.pipeline(), Some(PipelineId(0)));
 Приёмник обязан быть staging-буфером; внутри render pass — `Validation`.
 Вызов — только внутри copy-узла Render Graph (ADR-0039).
 
+Null-бэкенд эмулирует содержимое: копии переносят байты между памятью буфера
+и изображения (WP D4), поэтому срез «clear → copy → readback» проверяется в CI
+без GPU. Vulkan выполняет реальные `vkCmdCopy*`; на обоих бэкендах результат
+побайтово совпадает для форматов из `TextureFormat`.
+
 ```rust
 let mut device = NullDevice::new();
+let mut usage = TextureUsage::render_target();
+usage.transfer_src = true;
 let target = device
-    .create_image(&GpuImageDesc::new("target", 4, 4, TextureFormat::Rgba8Srgb))
+    .create_image(
+        &GpuImageDesc::new("target", 2, 2, TextureFormat::Rgba8Unorm).with_usage(usage),
+    )
     .unwrap();
 let staging = device
-    .create_buffer(&GpuBufferDesc::new("readback", 64, BufferUsage::staging()))
+    .create_buffer(&GpuBufferDesc::new("readback", 16, BufferUsage::staging()))
     .unwrap();
 let mut cmd = device.create_command_buffer().unwrap();
 cmd.begin().unwrap();
+cmd.begin_render_pass(
+    &RenderPassDesc::new("clear").with_color(target).with_clear([1.0, 0.0, 0.0, 1.0]),
+)
+.unwrap();
+cmd.end_render_pass().unwrap();
 cmd.copy_image_to_buffer(target, staging).unwrap();
 cmd.end().unwrap();
+cmd.finish().unwrap();
+let pixels = device.read_buffer(staging).unwrap();
+assert_eq!(&pixels[..4], &[255, 0, 0, 255]);
 ```
 
 #### `CommandBuffer::draw(&mut self, vertices, instances) -> Result<(), RhiError>`
@@ -7569,6 +7588,80 @@ let mut device = NullDevice::new();
 device.create_pipeline(&PipelineDesc::new("pbr", PipelineKind::Graphics)).unwrap();
 assert_eq!(device.pipeline_count(), 1);
 ```
+
+#### `NullDevice::sampler_count(&self) -> usize`
+
+Число живых сэмплеров (ADR-0041).
+
+```rust
+let mut device = NullDevice::new();
+device.create_sampler(&SamplerDesc::new("linear")).unwrap();
+assert_eq!(device.sampler_count(), 1);
+```
+
+#### `NullDevice::sampler_desc(&self, id) -> Option<SamplerDesc>`
+
+Дескриптор созданного сэмплера; `None` — хэндл неизвестен.
+
+```rust
+let mut device = NullDevice::new();
+let desc = SamplerDesc::new("linear").with_address(AddressMode::ClampToEdge);
+let sampler = device.create_sampler(&desc).unwrap();
+assert_eq!(device.sampler_desc(sampler), Some(desc));
+```
+
+#### `NullDevice::descriptor_set_count(&self) -> usize`
+
+Число живых дескрипторных наборов.
+
+```rust
+let mut device = NullDevice::new();
+let layout = [DescriptorBinding::new(0, BindingKind::Sampler)];
+let set = device
+    .create_descriptor_set(&DescriptorSetDesc::new("set0").with_bindings(&layout))
+    .unwrap();
+assert_eq!(device.descriptor_set_count(), 1);
+assert!(device.destroy_descriptor_set(set));
+assert_eq!(device.descriptor_set_count(), 0);
+```
+
+#### `NullDevice::descriptor_write(&self, set, binding, array_index) -> Option<DescriptorResource>`
+
+Записанный ресурс набора; `None` — запись не производилась.
+
+```rust
+let mut device = NullDevice::new();
+let sampler = device.create_sampler(&SamplerDesc::new("s")).unwrap();
+let layout = [DescriptorBinding::new(0, BindingKind::Sampler)];
+let set = device
+    .create_descriptor_set(&DescriptorSetDesc::new("set0").with_bindings(&layout))
+    .unwrap();
+device
+    .update_descriptor_set(set, &[DescriptorWrite::sampler(0, 0, sampler)])
+    .unwrap();
+assert_eq!(
+    device.descriptor_write(set, 0, 0),
+    Some(DescriptorResource::Sampler(sampler)),
+);
+```
+
+#### Эмуляция содержимого ресурсов (WP D4)
+
+Null хранит байты буферов и изображений и воспроизводит семантику копий,
+поэтому readback-тесты работают без GPU:
+
+- `create_image` инициализирует изображение нулями; `create_buffer` — нет
+  (буфер заполняется нулями при первом `write_buffer`/копировании).
+- `begin_render_pass` записывает `clear_color` в color-аттачменты и обнуляет
+  depth-аттачмент. Раскладка каналов соответствует `TextureFormat`:
+  `Rgba8Srgb`/`Rgba8Unorm` — RGBA, `Bgra8Srgb` — BGRA, `R8Unorm` — R,
+  `Rgba16Float` — IEEE-754 binary16, `D32Float` — нули. sRGB-перенос не
+  применяется: clear-значение пишется как есть (для `1.0`/`0.0` это
+  эквивалентно).
+- `copy_buffer_to_image` переносит байты staging-буфера в изображение,
+  `copy_image_to_buffer` — наоборот; переносится `min(длина, размер)`.
+- Draw/dispatch содержимое не меняют — Null не исполняет шейдеры. Поэтому
+  GPU-эталон (PSNR) проверяется на Vulkan, а Null фиксирует контракт RHI.
 
 #### `NullDevice::allocated_bytes(&self) -> u64`
 

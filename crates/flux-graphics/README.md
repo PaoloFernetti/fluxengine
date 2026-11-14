@@ -72,8 +72,13 @@ flux-graphics = { workspace = true, features = ["vulkan"] }
 - Дескрипторы (ADR-0039): set 0 через `PipelineDesc::with_bindings`
   (`UniformBuffer`/`StorageBuffer`/`SampledImage`/`StorageImage`, bindless
   `count`); `create/update/destroy_descriptor_set`, `bind_descriptor_set`.
+  Сэмплеры (ADR-0041): `SamplerDesc`/`SamplerId`, `BindingKind::Sampler`,
+  `create_sampler`/`destroy_sampler`, `supports_sampler_anisotropy`.
 - Копирование и readback: `copy_buffer_to_image`/`copy_image_to_buffer`
   (вне render pass), `write_buffer`/`read_buffer` для host-visible staging.
+  Null-бэкенд эмулирует содержимое (WP D4): clear color/depth в
+  `begin_render_pass`, перенос байтов в копиях, поэтому срез
+  «clear → copy → readback» проверяется без GPU.
 - Реальные шейдеры: `shaders/fullscreen.vert.hlsl` (`SV_VertexID`) и
   `shaders/solid.frag.hlsl` → `shaders/compiled/*.spv` (DXC,
   `tools/flux-assetc shader`). `tests/vulkan_pso.rs` собирает PSO, рисует
