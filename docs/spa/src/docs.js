@@ -41,7 +41,16 @@ function stripTitle(markdown) {
   return markdown.replace(/^#\s+.*\r?\n+/, '')
 }
 
+// Приводим переводы строк к LF до инлайна в бандл. Иначе сборка зависит от EOL
+// рабочего дерева: на Windows (CRLF) esbuild экранирует CR как `\r`, docs.html
+// получается на один байт на строку больше, и проверка CI
+// `git diff --exit-code -- docs.html` падает при неизменном содержимом.
+function normalizeEol(markdown) {
+  return markdown.replace(/\r\n/g, '\n')
+}
+
 function makeDoc({ id, file, title, nav, group, icon, kicker, description, raw }) {
+  const normalized = normalizeEol(raw)
   return {
     id,
     file,
@@ -52,8 +61,8 @@ function makeDoc({ id, file, title, nav, group, icon, kicker, description, raw }
     icon,
     kicker,
     description,
-    content: stripTitle(raw),
-    raw,
+    content: stripTitle(normalized),
+    raw: normalized,
   }
 }
 

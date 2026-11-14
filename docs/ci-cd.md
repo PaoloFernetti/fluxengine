@@ -32,6 +32,12 @@
     числовых порогов гейтов вне [Roadmap.md](Roadmap.md) и
     не-кириллических/не-латинских артефактов в тексте
 
+    `docs.html` детерминирован: markdown нормализуется к LF при импорте
+    (`docs/spa/src/docs.js`), поэтому сборка на Windows из CRLF-дерева
+    побайтово совпадает с CI. Если `git diff -- docs.html` непустой при
+    неизменном контенте — проверить `core.autocrlf=false` и LF в рабочем
+    дереве (`.gitattributes` объявляет `eol=lf` для всех текстовых файлов).
+
 Кэш: cargo registry + target (ключ — Cargo.lock); PSO/DXC-кэш — отдельный
 кэш между ранами.
 
