@@ -4,6 +4,24 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-11-14
+
+### Features
+
+#### graphics
+
+- сэмплеры в RHI по ADR-0041 (WP D3) ([49b2dfe](https://github.com/PaoloFernetti/fluxengine/commit/49b2dfe657e1a7271979eb5fcff9a000f75abc38))
+
+### Documentation
+
+#### adr
+
+- ADR-0041 — сэмплеры и чтение изображений в RHI ([00fb228](https://github.com/PaoloFernetti/fluxengine/commit/00fb2281970899776fc16f5ab5c7e5cfebb1e7f3))
+
+#### roadmap
+
+- план закрытия долгов этапов 1–4 и план дальнейшей разработки ([9bd1bc6](https://github.com/PaoloFernetti/fluxengine/commit/9bd1bc6904f89dcad7e97e4d3afaf58cf0d90c0d))
+
 ## [0.2.1] - 2026-11-14
 
 ### Fixes
