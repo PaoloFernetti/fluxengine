@@ -4,6 +4,14 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-11-14
+
+### Features
+
+#### graphics
+
+- Null-эмуляция содержимого и срез clear→copy→readback (WP D4) ([b6c5ed8](https://github.com/PaoloFernetti/fluxengine/commit/b6c5ed88fa4c3012b23d7b19bba7eb19e4430302))
+
 ## [0.3.0] - 2026-11-14
 
 ### Features
