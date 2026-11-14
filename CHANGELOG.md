@@ -4,6 +4,14 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] - 2026-11-14
+
+### Features
+
+#### graphics
+
+- GPU-проходы кадра G-buffer → SSAO → lighting → bloom → tonemap → TAA ([30015c8](https://github.com/PaoloFernetti/fluxengine/commit/30015c898ec74dcf7c64d53057cad881767fe217))
+
 ## [0.6.1] - 2026-11-14
 
 ### Fixes
