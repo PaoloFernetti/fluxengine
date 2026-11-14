@@ -4,6 +4,20 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.1] - 2026-11-14
+
+### Fixes
+
+#### graphics
+
+- Linux-сборка window surface (xlib/xcb/wayland) ([f58e924](https://github.com/PaoloFernetti/fluxengine/commit/f58e924e40eecab594ec90b4e26d8d716663a31f))
+
+### Internal
+
+#### ci
+
+- аннотировать падения Vulkan-шагов и проверять headless WSI ([93dfa7a](https://github.com/PaoloFernetti/fluxengine/commit/93dfa7a093a0f0b52a07cf5071e88cbf8b80db8a))
+
 ## [0.6.0] - 2026-11-14
 
 ### Features
