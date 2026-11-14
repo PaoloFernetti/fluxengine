@@ -16,7 +16,7 @@ use super::{
         BackendKind, BindingKind, BufferId, BufferUsage, Capabilities, DescriptorBinding,
         DescriptorResource, DescriptorSetDesc, DescriptorSetId, DescriptorWrite, GpuBufferDesc,
         GpuImageDesc, ImageId, PipelineDesc, PipelineId, PresentMode, QueryPoolDesc, QueryPoolId,
-        RenderPassDesc, SwapchainDesc, SwapchainId, TextureFormat,
+        RenderPassDesc, SamplerDesc, SamplerId, SwapchainDesc, SwapchainId, TextureFormat,
     },
     vram::{BudgetSnapshot, Pressure, VramAllocator, VramLease},
 };
@@ -133,12 +133,14 @@ pub struct NullDevice {
     caps: Capabilities,
     next_buffer: u64,
     next_image: u64,
+    next_sampler: u64,
     next_pipeline: u64,
     next_swapchain: u64,
     next_query_pool: u64,
     next_descriptor_set: u64,
     buffers: BTreeMap<u64, GpuBufferDesc>,
     images: BTreeMap<u64, GpuImageDesc>,
+    samplers: BTreeMap<u64, SamplerDesc>,
     pipelines: BTreeMap<u64, PipelineDesc>,
     query_pools: BTreeMap<u64, u32>,
     descriptor_sets: BTreeMap<u64, NullDescriptorSet>,
@@ -162,12 +164,14 @@ impl NullDevice {
             caps: Capabilities::headless(),
             next_buffer: 0,
             next_image: 0,
+            next_sampler: 0,
             next_pipeline: 0,
             next_swapchain: 0,
             next_query_pool: 0,
             next_descriptor_set: 0,
             buffers: BTreeMap::new(),
             images: BTreeMap::new(),
+            samplers: BTreeMap::new(),
             pipelines: BTreeMap::new(),
             query_pools: BTreeMap::new(),
             descriptor_sets: BTreeMap::new(),
@@ -197,6 +201,18 @@ impl NullDevice {
     #[must_use]
     pub fn image_count(&self) -> usize {
         self.images.len()
+    }
+
+    /// Число живых сэмплеров.
+    #[must_use]
+    pub fn sampler_count(&self) -> usize {
+        self.samplers.len()
+    }
+
+    /// Описание живого сэмплера.
+    #[must_use]
+    pub fn sampler_desc(&self, id: SamplerId) -> Option<SamplerDesc> {
+        self.samplers.get(&id.0).copied()
     }
 
     /// Число живых pipeline.
@@ -352,6 +368,25 @@ impl RhiDevice for NullDevice {
         self.pipelines.remove(&id.0).is_some()
     }
 
+    fn create_sampler(&mut self, desc: &SamplerDesc) -> Result<SamplerId, RhiError> {
+        if !desc.is_well_formed() {
+            return Err(RhiError::validation("sampler description is out of range"));
+        }
+        if desc.max_anisotropy > 1 && !self.caps.supports_sampler_anisotropy {
+            return Err(RhiError::validation(
+                "sampler anisotropy is not supported by the device",
+            ));
+        }
+        let id = self.next_sampler;
+        self.next_sampler = self.next_sampler.wrapping_add(1);
+        self.samplers.insert(id, *desc);
+        Ok(SamplerId(id))
+    }
+
+    fn destroy_sampler(&mut self, id: SamplerId) -> bool {
+        self.samplers.remove(&id.0).is_some()
+    }
+
     fn create_descriptor_set(
         &mut self,
         desc: &DescriptorSetDesc,
@@ -408,10 +443,16 @@ impl RhiDevice for NullDevice {
                         BindingKind::UniformBuffer | BindingKind::StorageBuffer,
                         DescriptorResource::Buffer(buffer),
                     ) => self.buffers.contains_key(&buffer.0),
-                    (
-                        BindingKind::SampledImage | BindingKind::StorageImage,
-                        DescriptorResource::Image(image),
-                    ) => self.images.contains_key(&image.0),
+                    (BindingKind::SampledImage, DescriptorResource::Image(image)) => self
+                        .images
+                        .get(&image.0)
+                        .is_some_and(|desc| desc.usage.sampled),
+                    (BindingKind::StorageImage, DescriptorResource::Image(image)) => {
+                        self.images.contains_key(&image.0)
+                    }
+                    (BindingKind::Sampler, DescriptorResource::Sampler(sampler)) => {
+                        self.samplers.contains_key(&sampler.0)
+                    }
                     _ => return Err(RhiError::validation("descriptor resource type mismatch")),
                 };
                 if !known {
@@ -862,6 +903,7 @@ mod tests {
     use super::*;
     use crate::rhi::cmd::ImageState;
     use crate::rhi::types::BufferUsage;
+    use crate::rhi::types::{AddressMode, FilterMode, TextureUsage};
     use std::collections::BTreeSet;
 
     fn buffer(size: u64) -> GpuBufferDesc {
@@ -1115,5 +1157,84 @@ mod tests {
         assert_eq!(allocator.budget().pressure, Pressure::High);
         allocator.allocate(9, MemoryTag::Rendering).unwrap();
         assert_eq!(allocator.budget().pressure, Pressure::Critical);
+    }
+
+    #[test]
+    fn sampler_desc_validates_ranges() {
+        let mut device = NullDevice::new();
+        let valid = SamplerDesc::new("linear")
+            .with_filters(FilterMode::Linear, FilterMode::Linear)
+            .with_address(AddressMode::Repeat)
+            .with_anisotropy(4);
+        let sampler = device.create_sampler(&valid).unwrap();
+        assert_eq!(device.sampler_count(), 1);
+        assert_eq!(device.sampler_desc(sampler), Some(valid));
+        assert!(device.destroy_sampler(sampler));
+        assert_eq!(device.sampler_count(), 0);
+        assert!(!device.destroy_sampler(sampler));
+
+        let zero_anisotropy = SamplerDesc::new("bad").with_anisotropy(0);
+        assert!(device.create_sampler(&zero_anisotropy).is_err());
+
+        let mut inverted = SamplerDesc::new("bad-lod");
+        inverted.lod_min = 4.0;
+        inverted.lod_max = 1.0;
+        assert!(device.create_sampler(&inverted).is_err());
+
+        let mut no_anisotropy = Capabilities::headless();
+        no_anisotropy.supports_sampler_anisotropy = false;
+        let mut limited = NullDevice::with_capabilities(no_anisotropy);
+        let aniso = SamplerDesc::new("aniso").with_anisotropy(8);
+        assert!(limited.create_sampler(&aniso).is_err());
+    }
+
+    #[test]
+    fn descriptor_write_rejects_wrong_resource() {
+        let mut device = NullDevice::new();
+        let sampler = device.create_sampler(&SamplerDesc::new("s")).unwrap();
+        let image = device
+            .create_image(&GpuImageDesc::new("tex", 4, 4, TextureFormat::Rgba8Srgb))
+            .unwrap();
+        let layout = [
+            DescriptorBinding::new(0, BindingKind::Sampler),
+            DescriptorBinding::new(1, BindingKind::SampledImage),
+        ];
+        let set = device
+            .create_descriptor_set(&DescriptorSetDesc::new("set0").with_bindings(&layout))
+            .unwrap();
+
+        assert!(device
+            .update_descriptor_set(set, &[DescriptorWrite::sampler(0, 0, sampler)])
+            .is_ok());
+        assert_eq!(
+            device.descriptor_write(set, 0, 0),
+            Some(DescriptorResource::Sampler(sampler))
+        );
+        assert!(device
+            .update_descriptor_set(set, &[DescriptorWrite::image(0, 0, image)])
+            .is_err());
+        assert!(device
+            .update_descriptor_set(set, &[DescriptorWrite::sampler(1, 0, sampler)])
+            .is_err());
+    }
+
+    #[test]
+    fn sampled_image_requires_sampled_usage() {
+        let mut device = NullDevice::new();
+        let storage_only = device
+            .create_image(
+                &GpuImageDesc::new("storage", 4, 4, TextureFormat::Rgba8Unorm)
+                    .with_usage(TextureUsage::storage()),
+            )
+            .unwrap();
+        let set = device
+            .create_descriptor_set(
+                &DescriptorSetDesc::new("set0")
+                    .with_bindings(&[DescriptorBinding::new(0, BindingKind::SampledImage)]),
+            )
+            .unwrap();
+        assert!(device
+            .update_descriptor_set(set, &[DescriptorWrite::image(0, 0, storage_only)])
+            .is_err());
     }
 }

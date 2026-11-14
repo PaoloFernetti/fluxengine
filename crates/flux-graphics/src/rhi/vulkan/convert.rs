@@ -6,7 +6,9 @@ use ash::vk;
 
 use super::super::cmd::ImageState;
 use super::super::error::RhiError;
-use super::super::types::{BufferUsage, TextureFormat, TextureUsage};
+use super::super::types::{
+    AddressMode, BufferUsage, FilterMode, MipmapMode, TextureFormat, TextureUsage,
+};
 
 /// Отображает `vk::Result` в типизированную ошибку RHI.
 pub(crate) fn map_vk(result: vk::Result) -> RhiError {
@@ -16,6 +18,32 @@ pub(crate) fn map_vk(result: vk::Result) -> RhiError {
         }
         vk::Result::ERROR_DEVICE_LOST => RhiError::DeviceLost,
         other => RhiError::Validation(format!("vulkan: {other:?}")),
+    }
+}
+
+/// Фильтр Vulkan для режима фильтрации (ADR-0041).
+pub(crate) const fn filter(mode: FilterMode) -> vk::Filter {
+    match mode {
+        FilterMode::Nearest => vk::Filter::NEAREST,
+        FilterMode::Linear => vk::Filter::LINEAR,
+    }
+}
+
+/// Режим mip-фильтрации Vulkan (ADR-0041).
+pub(crate) const fn mipmap(mode: MipmapMode) -> vk::SamplerMipmapMode {
+    match mode {
+        MipmapMode::Nearest => vk::SamplerMipmapMode::NEAREST,
+        MipmapMode::Linear => vk::SamplerMipmapMode::LINEAR,
+    }
+}
+
+/// Адресация Vulkan для режима за границей текстуры (ADR-0041).
+pub(crate) const fn address(mode: AddressMode) -> vk::SamplerAddressMode {
+    match mode {
+        AddressMode::ClampToEdge => vk::SamplerAddressMode::CLAMP_TO_EDGE,
+        AddressMode::Repeat => vk::SamplerAddressMode::REPEAT,
+        AddressMode::MirrorRepeat => vk::SamplerAddressMode::MIRRORED_REPEAT,
+        AddressMode::ClampToBorder => vk::SamplerAddressMode::CLAMP_TO_BORDER,
     }
 }
 

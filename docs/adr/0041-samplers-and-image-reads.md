@@ -40,12 +40,14 @@ HLSL в SPIR-V (ADR-0035) объявляет `Texture2D tN` и `SamplerState sN`
 - `SamplerId` — детерминированный хэндл (как остальные RHI-хэндлы);
   `RhiDevice::create_sampler` / `destroy_sampler`.
 - `BindingKind::Sampler` — VK `SAMPLER`, HLSL `sN`.
-  `BindingKind::CombinedImageSampler` — VK `COMBINED_IMAGE_SAMPLER`, HLSL `tN`;
-  допускается только для рукописного SPIR-V и совместимости.
+  `BindingKind::CombinedImageSampler` — **зарезервирован, в v1 не реализуется**:
+  DXC выдаёт раздельные переменные, а combined требует пары image+sampler в
+  одной записи, которой нет в `DescriptorWrite`; вводится при необходимости
+  рукописного SPIR-V (см. «Уточнение при реализации»).
 - `DescriptorResource::Sampler(SamplerId)` и
   `DescriptorWrite::sampler(binding, array_index, sampler)`.
 - **Валидация (Null и Vulkan одинаково):** `Sampler` ↔ `Sampler`;
-  `SampledImage` и `CombinedImageSampler` ↔ `Image` с `TextureUsage::sampled()`;
+  `SampledImage` ↔ `Image` с `TextureUsage::sampled()`;
   `max_anisotropy > 1` требует `Capabilities::supports_sampler_anisotropy`;
   нарушение — `RhiError::Validation`.
 - `ImageState::ShaderRead` — единственное состояние чтения. Render Graph обязан
@@ -59,9 +61,10 @@ HLSL в SPIR-V (ADR-0035) объявляет `Texture2D tN` и `SamplerState sN`
 - **Сэмплеры иммутабельны:** `update_sampler` не существует; смена фильтрации —
   это новый `SamplerId`. Это снимает для сэмплеров вопрос обновления набора
   в полёте (ADR-0039).
-- Vulkan: кэш `SamplerDesc → vk::Sampler` (`BTreeMap`), `vkCreateSampler`,
-  `update_descriptor_set` пишет `vk::DescriptorImageInfo { sampler, image_view,
-  image_layout: SHADER_READ_ONLY_OPTIMAL }`.
+- Vulkan: `vkCreateSampler` на каждый `create_sampler`,
+  `update_descriptor_set` пишет `vk::DescriptorImageInfo { sampler }` для
+  `Sampler` и `{ image_view, image_layout: SHADER_READ_ONLY_OPTIMAL }` для
+  `SampledImage`.
 - Null: хранит `SamplerDesc`, валидирует биндинги и состояния; семплирование
   не эмулирует — read-проходы проверяются через storage-путь и копирование.
 - DX12 (этап 6): SRV + sampler heap/static samplers; контракт не меняется,
@@ -85,6 +88,17 @@ HLSL в SPIR-V (ADR-0035) объявляет `Texture2D tN` и `SamplerState sN`
   а не «тихо неверным кадром».
 - Анизотропия и `ClampToBorder` недоступны на слабых устройствах — это
   отражается в `Capabilities`, а не в коде прохода.
+
+### Уточнение при реализации (D3)
+
+- `CombinedImageSampler` оставлен зарезервированным: combined без пары
+  image+sampler в `DescriptorWrite` означал бы скрытый дефолтный сэмплер, то
+  есть неявное поведение вместо явного контракта.
+- Кэш сэмплеров по `SamplerDesc` не вводится в v1: в дескрипторе есть `f32`
+  LOD, поэтому он не годится в ключ `BTreeMap` без нормализации, а создание
+  сэмплера — редкая операция. Кэш — оптимизация уровня D8.
+- `Capabilities::supports_sampler_anisotropy` заполняется из
+  `VkPhysicalDeviceFeatures::sampler_anisotropy`; Null сообщает `true`.
 
 ## Тесты
 

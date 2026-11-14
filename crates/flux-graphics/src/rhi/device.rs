@@ -7,7 +7,7 @@ use super::{
     types::{
         BackendKind, BufferId, Capabilities, DescriptorSetDesc, DescriptorSetId, DescriptorWrite,
         GpuBufferDesc, GpuImageDesc, ImageId, PipelineDesc, PipelineId, QueryPoolDesc, QueryPoolId,
-        SwapchainDesc,
+        SamplerDesc, SamplerId, SwapchainDesc,
     },
 };
 
@@ -43,6 +43,19 @@ pub trait RhiDevice: Send {
 
     /// Уничтожает изображение.
     fn destroy_image(&mut self, id: ImageId) -> bool;
+
+    /// Создаёт сэмплер (ADR-0041).
+    ///
+    /// Сэмплеры иммутабельны: изменение фильтрации — это новый сэмплер.
+    ///
+    /// # Errors
+    ///
+    /// [`RhiError::Validation`] — некорректные границы полей или анизотропия
+    /// не поддержана устройством.
+    fn create_sampler(&mut self, desc: &SamplerDesc) -> Result<SamplerId, RhiError>;
+
+    /// Уничтожает сэмплер. `false` — хэндл неизвестен/уже уничтожен.
+    fn destroy_sampler(&mut self, id: SamplerId) -> bool;
 
     /// Создаёт pipeline state object.
     fn create_pipeline(&mut self, desc: &PipelineDesc) -> Result<PipelineId, RhiError>;

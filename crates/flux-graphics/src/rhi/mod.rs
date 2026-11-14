@@ -20,11 +20,11 @@ pub use error::RhiError;
 pub use null::{NullCommandBuffer, NullDevice, NullSwapchain, NullVramAllocator};
 pub use swapchain::Swapchain;
 pub use types::{
-    BackendKind, BindingKind, BufferId, BufferUsage, Capabilities, DescriptorBinding,
-    DescriptorResource, DescriptorSetDesc, DescriptorSetId, DescriptorWrite, GpuBufferDesc,
-    GpuImageDesc, ImageId, PipelineDesc, PipelineId, PipelineKind, PresentMode, PrimitiveTopology,
-    QueryPoolDesc, QueryPoolId, RenderPassDesc, SwapchainDesc, SwapchainId, TextureFormat,
-    TextureUsage,
+    AddressMode, BackendKind, BindingKind, BufferId, BufferUsage, Capabilities, DescriptorBinding,
+    DescriptorResource, DescriptorSetDesc, DescriptorSetId, DescriptorWrite, FilterMode,
+    GpuBufferDesc, GpuImageDesc, ImageId, MipmapMode, PipelineDesc, PipelineId, PipelineKind,
+    PresentMode, PrimitiveTopology, QueryPoolDesc, QueryPoolId, RenderPassDesc, SamplerDesc,
+    SamplerId, SwapchainDesc, SwapchainId, TextureFormat, TextureUsage,
 };
 pub use vram::{BudgetSnapshot, Pressure, VramAllocator, VramLease};
 #[cfg(feature = "vulkan")]

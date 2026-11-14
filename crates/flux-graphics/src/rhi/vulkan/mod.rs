@@ -30,7 +30,7 @@ use super::types::{
     BackendKind, BindingKind, BufferId, Capabilities, DescriptorBinding, DescriptorResource,
     DescriptorSetDesc, DescriptorSetId, DescriptorWrite, GpuBufferDesc, GpuImageDesc, ImageId,
     PipelineDesc, PipelineId, PipelineKind, PresentMode, PrimitiveTopology, QueryPoolDesc,
-    QueryPoolId, RenderPassDesc, SwapchainDesc, TextureFormat,
+    QueryPoolId, RenderPassDesc, SamplerDesc, SamplerId, SwapchainDesc, TextureFormat,
 };
 use super::vram::{BudgetSnapshot, VramAllocator, VramLease};
 use memory::{Allocation, MemoryState};
@@ -92,6 +92,10 @@ impl DeviceContext {
         for (_, entry) in std::mem::take(&mut store.query_pools) {
             // SAFETY: query pool is owned by the store and destroyed exactly once.
             unsafe { device.destroy_query_pool(entry.pool, None) };
+        }
+        for (_, entry) in std::mem::take(&mut store.samplers) {
+            // SAFETY: sampler is owned by the store and destroyed exactly once.
+            unsafe { device.destroy_sampler(entry.sampler, None) };
         }
         if let Some(pool) = store.descriptor_pool.take() {
             let sets: Vec<vk::DescriptorSet> = std::mem::take(&mut store.descriptor_sets)
@@ -175,6 +179,11 @@ pub(crate) struct QueryPoolEntry {
     pub(crate) count: u32,
 }
 
+/// Запись сэмплера в реестре ресурсов (ADR-0041).
+pub(crate) struct SamplerEntry {
+    pub(crate) sampler: vk::Sampler,
+}
+
 /// Запись дескрипторного набора в реестре ресурсов.
 pub(crate) struct DescriptorSetEntry {
     pub(crate) set: vk::DescriptorSet,
@@ -188,6 +197,7 @@ const fn descriptor_type(kind: BindingKind) -> vk::DescriptorType {
         BindingKind::StorageBuffer => vk::DescriptorType::STORAGE_BUFFER,
         BindingKind::SampledImage => vk::DescriptorType::SAMPLED_IMAGE,
         BindingKind::StorageImage => vk::DescriptorType::STORAGE_IMAGE,
+        BindingKind::Sampler => vk::DescriptorType::SAMPLER,
     }
 }
 
@@ -212,6 +222,7 @@ pub(crate) struct ResourceStore {
     images: BTreeMap<u64, ImageEntry>,
     pipelines: BTreeMap<u64, PipelineEntry>,
     query_pools: BTreeMap<u64, QueryPoolEntry>,
+    samplers: BTreeMap<u64, SamplerEntry>,
     descriptor_sets: BTreeMap<u64, DescriptorSetEntry>,
     descriptor_layouts: BTreeMap<Vec<DescriptorBinding>, vk::DescriptorSetLayout>,
     descriptor_pool: Option<vk::DescriptorPool>,
@@ -228,6 +239,7 @@ impl ResourceStore {
             images: BTreeMap::new(),
             pipelines: BTreeMap::new(),
             query_pools: BTreeMap::new(),
+            samplers: BTreeMap::new(),
             descriptor_sets: BTreeMap::new(),
             descriptor_layouts: BTreeMap::new(),
             descriptor_pool: None,
@@ -1156,6 +1168,52 @@ impl RhiDevice for VulkanDevice {
         true
     }
 
+    fn create_sampler(&mut self, desc: &SamplerDesc) -> Result<SamplerId, RhiError> {
+        if !desc.is_well_formed() {
+            return Err(RhiError::validation("sampler description is out of range"));
+        }
+        if desc.max_anisotropy > 1 && !self.context.caps.supports_sampler_anisotropy {
+            return Err(RhiError::validation(
+                "sampler anisotropy is not supported by the device",
+            ));
+        }
+        let info = vk::SamplerCreateInfo::default()
+            .mag_filter(convert::filter(desc.mag_filter))
+            .min_filter(convert::filter(desc.min_filter))
+            .mipmap_mode(convert::mipmap(desc.mipmap_mode))
+            .address_mode_u(convert::address(desc.address_u))
+            .address_mode_v(convert::address(desc.address_v))
+            .address_mode_w(convert::address(desc.address_w))
+            .anisotropy_enable(desc.max_anisotropy > 1)
+            .max_anisotropy(f32::from(desc.max_anisotropy))
+            .min_lod(desc.lod_min)
+            .max_lod(desc.lod_max)
+            .compare_enable(desc.compare)
+            .compare_op(if desc.compare {
+                vk::CompareOp::LESS_OR_EQUAL
+            } else {
+                vk::CompareOp::ALWAYS
+            })
+            .border_color(vk::BorderColor::FLOAT_OPAQUE_BLACK);
+        // SAFETY: descriptor is validated and the device outlives the sampler.
+        let sampler =
+            unsafe { self.context.device.create_sampler(&info, None) }.map_err(convert::map_vk)?;
+        let mut store = self.context.store.lock();
+        let id = store.next_id();
+        store.samplers.insert(id, SamplerEntry { sampler });
+        Ok(SamplerId(id))
+    }
+
+    fn destroy_sampler(&mut self, id: SamplerId) -> bool {
+        let mut store = self.context.store.lock();
+        let Some(entry) = store.samplers.remove(&id.0) else {
+            return false;
+        };
+        // SAFETY: sampler belongs to this device and was removed above.
+        unsafe { self.context.device.destroy_sampler(entry.sampler, None) };
+        true
+    }
+
     fn create_descriptor_set(
         &mut self,
         desc: &DescriptorSetDesc,
@@ -1262,6 +1320,23 @@ impl RhiDevice for VulkanDevice {
                             .image_view(resource.view)
                             .image_layout(layout),
                     );
+                    planned.push((
+                        write.binding,
+                        write.array_index,
+                        descriptor_type(binding.kind),
+                        Some(image_infos.len() - 1),
+                        false,
+                    ));
+                }
+                DescriptorResource::Sampler(sampler) => {
+                    if binding.kind != BindingKind::Sampler {
+                        return Err(RhiError::validation("descriptor resource type mismatch"));
+                    }
+                    let resource = store
+                        .samplers
+                        .get(&sampler.0)
+                        .ok_or_else(|| RhiError::validation("unknown descriptor sampler"))?;
+                    image_infos.push(vk::DescriptorImageInfo::default().sampler(resource.sampler));
                     planned.push((
                         write.binding,
                         write.array_index,
@@ -1511,6 +1586,8 @@ fn build_device(instance: &ash::Instance, api_version: u32) -> Result<BuiltDevic
     // SAFETY: physical device belongs to the instance.
     let properties = unsafe { instance.get_physical_device_properties(physical) };
     // SAFETY: physical device belongs to the instance.
+    let features = unsafe { instance.get_physical_device_features(physical) };
+    // SAFETY: physical device belongs to the instance.
     let memory_properties = unsafe { instance.get_physical_device_memory_properties(physical) };
     let device_name = properties
         .device_name_as_c_str()
@@ -1531,7 +1608,13 @@ fn build_device(instance: &ash::Instance, api_version: u32) -> Result<BuiltDevic
     let descriptor_indexing = indexing.runtime_descriptor_array == vk::TRUE
         && indexing.descriptor_binding_partially_bound == vk::TRUE;
 
-    let mut caps = build_capabilities(instance, physical, &properties, descriptor_indexing)?;
+    let mut caps = build_capabilities(
+        instance,
+        physical,
+        &properties,
+        descriptor_indexing,
+        features.sampler_anisotropy == vk::TRUE,
+    )?;
     caps.supports_timeline_semaphores = timeline_supported;
 
     let priorities = [1.0f32];
@@ -1579,6 +1662,7 @@ fn build_capabilities(
     physical: vk::PhysicalDevice,
     properties: &vk::PhysicalDeviceProperties,
     descriptor_indexing: bool,
+    sampler_anisotropy: bool,
 ) -> Result<Capabilities, RhiError> {
     let candidates = [
         (
@@ -1641,6 +1725,7 @@ fn build_capabilities(
         },
         supports_timeline_semaphores: false,
         supports_descriptor_indexing: descriptor_indexing,
+        supports_sampler_anisotropy: sampler_anisotropy,
         present_modes: vec![
             PresentMode::Fifo,
             PresentMode::Mailbox,

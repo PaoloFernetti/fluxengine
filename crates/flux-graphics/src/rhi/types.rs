@@ -287,6 +287,7 @@ handle!(PipelineId, "Хэндл pipeline state object.");
 handle!(DescriptorSetId, "Хэндл дескрипторного набора.");
 handle!(SwapchainId, "Хэндл swapchain.");
 handle!(QueryPoolId, "Хэндл пула GPU-запросов (таймстемпы).");
+handle!(SamplerId, "Хэндл сэмплера (ADR-0041).");
 
 /// Дескриптор GPU-буфера.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -353,6 +354,123 @@ impl GpuImageDesc {
     }
 }
 
+/// Фильтрация текселей (ADR-0041).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum FilterMode {
+    /// Ближайший тексель.
+    Nearest,
+    /// Линейная интерполяция (по умолчанию).
+    #[default]
+    Linear,
+}
+
+/// Фильтрация между mip-уровнями (ADR-0041).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MipmapMode {
+    /// Ближайший mip-уровень.
+    Nearest,
+    /// Линейная интерполяция между уровнями (по умолчанию).
+    #[default]
+    Linear,
+}
+
+/// Поведение за границей текстуры (ADR-0041).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AddressMode {
+    /// Зажимать крайний тексель (по умолчанию).
+    #[default]
+    ClampToEdge,
+    /// Повторять текстуру.
+    Repeat,
+    /// Зеркальный повтор.
+    MirrorRepeat,
+    /// Цвет границы.
+    ClampToBorder,
+}
+
+/// Описание сэмплера (ADR-0041).
+///
+/// Сэмплеры иммутабельны: смена фильтрации — это новый [`SamplerId`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SamplerDesc {
+    /// Метка для диагностики.
+    pub label: &'static str,
+    /// Фильтрация увеличения.
+    pub mag_filter: FilterMode,
+    /// Фильтрация уменьшения.
+    pub min_filter: FilterMode,
+    /// Фильтрация mip-уровней.
+    pub mipmap_mode: MipmapMode,
+    /// Адресация по U.
+    pub address_u: AddressMode,
+    /// Адресация по V.
+    pub address_v: AddressMode,
+    /// Адресация по W.
+    pub address_w: AddressMode,
+    /// Максимальная анизотропия (`1` — выключена).
+    pub max_anisotropy: u16,
+    /// Минимальный LOD.
+    pub lod_min: f32,
+    /// Максимальный LOD.
+    pub lod_max: f32,
+    /// Сравнение глубины (shadow sampler).
+    pub compare: bool,
+}
+
+impl SamplerDesc {
+    /// Линейный сэмплер с зажимом краёв и без анизотропии.
+    #[must_use]
+    pub const fn new(label: &'static str) -> Self {
+        Self {
+            label,
+            mag_filter: FilterMode::Linear,
+            min_filter: FilterMode::Linear,
+            mipmap_mode: MipmapMode::Linear,
+            address_u: AddressMode::ClampToEdge,
+            address_v: AddressMode::ClampToEdge,
+            address_w: AddressMode::ClampToEdge,
+            max_anisotropy: 1,
+            lod_min: 0.0,
+            lod_max: 1000.0,
+            compare: false,
+        }
+    }
+
+    /// Задаёт фильтрацию min/mag.
+    #[must_use]
+    pub const fn with_filters(mut self, min: FilterMode, mag: FilterMode) -> Self {
+        self.min_filter = min;
+        self.mag_filter = mag;
+        self
+    }
+
+    /// Задаёт адресацию по всем осям.
+    #[must_use]
+    pub const fn with_address(mut self, mode: AddressMode) -> Self {
+        self.address_u = mode;
+        self.address_v = mode;
+        self.address_w = mode;
+        self
+    }
+
+    /// Задаёт максимальную анизотропию.
+    #[must_use]
+    pub const fn with_anisotropy(mut self, max_anisotropy: u16) -> Self {
+        self.max_anisotropy = max_anisotropy;
+        self
+    }
+
+    /// Проверяет границы полей без учёта `Capabilities`.
+    #[must_use]
+    pub fn is_well_formed(&self) -> bool {
+        self.max_anisotropy >= 1
+            && self.lod_min.is_finite()
+            && self.lod_max.is_finite()
+            && self.lod_min >= 0.0
+            && self.lod_max >= self.lod_min
+    }
+}
+
 /// Тип ресурса в дескрипторном наборе.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum BindingKind {
@@ -364,6 +482,8 @@ pub enum BindingKind {
     SampledImage,
     /// Storage-изображение (`RWTexture2D`).
     StorageImage,
+    /// Сэмплер (`SamplerState`, HLSL `sN`); ADR-0041.
+    Sampler,
 }
 
 /// Одно объявление дескрипторного биндинга.
@@ -430,6 +550,8 @@ pub enum DescriptorResource {
     Buffer(BufferId),
     /// Изображение.
     Image(ImageId),
+    /// Сэмплер (ADR-0041).
+    Sampler(SamplerId),
 }
 
 /// Запись дескриптора: биндинг, индекс в массиве и ресурс.
@@ -461,6 +583,16 @@ impl DescriptorWrite {
             binding,
             array_index,
             resource: DescriptorResource::Image(image),
+        }
+    }
+
+    /// Запись сэмплера (ADR-0041).
+    #[must_use]
+    pub const fn sampler(binding: u32, array_index: u32, sampler: SamplerId) -> Self {
+        Self {
+            binding,
+            array_index,
+            resource: DescriptorResource::Sampler(sampler),
         }
     }
 }
@@ -752,6 +884,8 @@ pub struct Capabilities {
     pub supports_timeline_semaphores: bool,
     /// Поддержка descriptor indexing (bindless).
     pub supports_descriptor_indexing: bool,
+    /// Поддержка анизотропной фильтрации (ADR-0041).
+    pub supports_sampler_anisotropy: bool,
     /// Доступные режимы представления.
     pub present_modes: Vec<PresentMode>,
     /// Поддерживаемые цветовые форматы.
@@ -771,6 +905,7 @@ impl Capabilities {
             max_bindless_descriptors: 65_536,
             supports_timeline_semaphores: false,
             supports_descriptor_indexing: true,
+            supports_sampler_anisotropy: true,
             present_modes: vec![PresentMode::Fifo],
             color_formats: vec![TextureFormat::Rgba8Srgb, TextureFormat::Bgra8Srgb],
             depth_formats: vec![TextureFormat::D32Float],

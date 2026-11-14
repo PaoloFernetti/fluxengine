@@ -604,8 +604,8 @@ deadzone не теряет диапазон (rescale); rebinding roundtrip че�
       PSO-кадр с `draw` без validation-ошибок (`tests/vulkan_pso.rs`)
 - [x] RHI-контракт GPU-проходов: дескрипторные наборы (set 0, bindless),
       копирование buffer↔image и staging-readback (ADR-0039)
-- [ ] GPU-проходы G-buffer → lighting → tonemap → bloom/TAA/SSAO (после I6);
-      до sampler-ADR реализуемы только write-проходы (G-buffer → staging)
+- [ ] GPU-проходы G-buffer → lighting → tonemap → bloom/TAA/SSAO: sampler-ADR
+      принят (ADR-0041) и реализован в RHI (WP D3) — проходы делает WP D4
 
 **Приёмка**: ABI G-buffer и PBR/tonemap/post-формулы зафиксированы и покрыты
 тестами; Vulkan собирает PSO из SPIR-V; clearcoat добавляется keyword-ом без
@@ -1160,8 +1160,12 @@ Must-требования закрываются гейтами; Should — пр
 блокирует код, но обязателен для G4.
 
 Статус: **D1 закрыт** (чекбоксы 2.1/4.3/7.7 актуализированы), **D2 закрыт**
-([ADR-0041](adr/0041-samplers-and-image-reads.md)); следующий — D3: RHI-типы
-сэмплеров в Null/Vulkan и вертикальный срез «G-buffer → copy → readback».
+([ADR-0041](adr/0041-samplers-and-image-reads.md)), **D3 закрыт**: `SamplerDesc`,
+`SamplerId`, `FilterMode`/`MipmapMode`/`AddressMode`, `BindingKind::Sampler`,
+`DescriptorResource::Sampler`, `create_sampler`/`destroy_sampler` в Null и
+Vulkan, `Capabilities::supports_sampler_anisotropy`, три теста валидации.
+Срез «G-buffer → copy → readback» перенесён в D4: без реального прохода он
+проверял бы только контракт, который уже покрыт тестами. Следующий — D4.
 
 ## План дальнейшей разработки (этапы 5–7)
 
