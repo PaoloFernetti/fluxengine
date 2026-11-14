@@ -4,6 +4,14 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] - 2026-11-14
+
+### Fixes
+
+#### ci
+
+- не отменять release-прогон и синхронизировать master отдельным job ([d018dad](https://github.com/PaoloFernetti/fluxengine/commit/d018dad00ad076d1301e5eb1993edb5b92fc4b15))
+
 ## [0.2.0] - 2026-11-14
 
 ### Features
