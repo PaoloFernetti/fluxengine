@@ -126,11 +126,26 @@ jobs:
         run: |
           vulkaninfo --summary
           vulkaninfo --summary | grep -Eqi 'lavapipe|llvmpipe'
+          if vulkaninfo | grep -qi 'VK_EXT_headless_surface'; then
+            echo "::notice title=WSI::VK_EXT_headless_surface available"
+          else
+            echo "::notice title=WSI::VK_EXT_headless_surface NOT available"
+          fi
 
       - name: Vulkan RHI unit tests (device required)
         env:
           FLUX_REQUIRE_VULKAN: "1"
-        run: cargo test -p flux-graphics --features vulkan --lib
+          RUST_BACKTRACE: "1"
+        run: |
+          set +e
+          cargo test -p flux-graphics --features vulkan --lib -- --nocapture 2>&1 | tee unit.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            failed=$(grep -E '^test .* FAILED$' unit.log | head -n 5 | tr '\n' ';')
+            reason=$(grep -m1 -E 'panicked at|assertion .* failed|thread .* panicked' unit.log | tr '\n' ' ')
+            echo "::error title=Vulkan unit tests failed::${failed} ${reason}"
+          fi
+          exit "$status"
 
       - name: Vulkan PSO smoke (device required)
         env:
