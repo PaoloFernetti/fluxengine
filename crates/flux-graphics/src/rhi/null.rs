@@ -22,13 +22,6 @@ use super::{
     vram::{BudgetSnapshot, Pressure, VramAllocator, VramLease},
 };
 
-/// Host-visible буфер: staging-пара (transfer src+dst) без GPU-использования.
-fn is_host_visible(usage: BufferUsage) -> bool {
-    usage.transfer_src
-        && usage.transfer_dst
-        && !(usage.vertex || usage.index || usage.uniform || usage.storage || usage.indirect)
-}
-
 /// Содержимое ресурсов Null: bit-exact эмуляция памяти для readback-тестов.
 #[derive(Clone, Debug, Default)]
 struct NullMemory {
@@ -551,7 +544,7 @@ impl RhiDevice for NullDevice {
             .buffers
             .get(&id.0)
             .ok_or_else(|| RhiError::validation("unknown buffer"))?;
-        if !is_host_visible(desc.usage) {
+        if !desc.usage.is_staging() {
             return Err(RhiError::validation("buffer is not host-visible"));
         }
         let end = offset
@@ -573,7 +566,7 @@ impl RhiDevice for NullDevice {
             .buffers
             .get(&id.0)
             .ok_or_else(|| RhiError::validation("unknown buffer"))?;
-        if !is_host_visible(desc.usage) {
+        if !desc.usage.is_staging() {
             return Err(RhiError::validation("buffer is not host-visible"));
         }
         if let Some(contents) = lock_memory(&self.memory).buffers.get(&id.0) {
@@ -939,7 +932,7 @@ impl CommandBuffer for NullCommandBuffer {
         let Some(usage) = self.buffers.get(&buffer.0) else {
             return Err(RhiError::validation("unknown source buffer"));
         };
-        if !is_host_visible(*usage) {
+        if !usage.is_staging() {
             return Err(RhiError::validation("copy source must be a staging buffer"));
         }
         if !self.images.contains(&image.0) {
@@ -967,7 +960,7 @@ impl CommandBuffer for NullCommandBuffer {
         let Some(usage) = self.buffers.get(&buffer.0) else {
             return Err(RhiError::validation("unknown destination buffer"));
         };
-        if !is_host_visible(*usage) {
+        if !usage.is_staging() {
             return Err(RhiError::validation(
                 "copy destination must be a staging buffer",
             ));

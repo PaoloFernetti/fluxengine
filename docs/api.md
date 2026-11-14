@@ -7054,6 +7054,12 @@ assert!(device.destroy_descriptor_set(set));
 Читает содержимое host-visible буфера (readback). Null-бэкенд хранит
 записанные байты в памяти, Vulkan использует `map_memory` после `wait_idle`.
 
+Staging определяется usage-флагами (`BufferUsage::is_staging()`:
+`transfer_src && transfer_dst` без GPU-использования), а не свойствами
+памяти. На software-бэкенде (lavapipe) вся память host-visible, поэтому
+проверка по памяти пропускала бы storage-буферы; контракт должен совпадать
+на всех устройствах.
+
 ```rust
 let mut device = NullDevice::new();
 let staging = device

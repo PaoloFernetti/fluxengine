@@ -273,7 +273,9 @@ impl CommandBuffer for VulkanCommandBuffer {
                 .buffers
                 .get(&buffer.0)
                 .ok_or_else(|| RhiError::validation("unknown source buffer"))?;
-            if !source.allocation.host_visible {
+            // Контракт ADR-0039 — по usage-флагам: на lavapipe вся память
+            // host-visible, и проверка по allocation пропускала бы storage.
+            if !source.usage.is_staging() || !source.allocation.host_visible {
                 return Err(RhiError::validation("copy source must be a staging buffer"));
             }
             let target = store.image_entry(image)?;
@@ -323,7 +325,7 @@ impl CommandBuffer for VulkanCommandBuffer {
                 .buffers
                 .get(&buffer.0)
                 .ok_or_else(|| RhiError::validation("unknown destination buffer"))?;
-            if !target.allocation.host_visible {
+            if !target.usage.is_staging() || !target.allocation.host_visible {
                 return Err(RhiError::validation(
                     "copy destination must be a staging buffer",
                 ));

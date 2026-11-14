@@ -27,10 +27,11 @@ use super::device::RhiDevice;
 use super::error::RhiError;
 use super::swapchain::Swapchain;
 use super::types::{
-    BackendKind, BindingKind, BufferId, Capabilities, DescriptorBinding, DescriptorResource,
-    DescriptorSetDesc, DescriptorSetId, DescriptorWrite, GpuBufferDesc, GpuImageDesc, ImageId,
-    PipelineDesc, PipelineId, PipelineKind, PresentMode, PrimitiveTopology, QueryPoolDesc,
-    QueryPoolId, RenderPassDesc, SamplerDesc, SamplerId, SwapchainDesc, TextureFormat,
+    BackendKind, BindingKind, BufferId, BufferUsage, Capabilities, DescriptorBinding,
+    DescriptorResource, DescriptorSetDesc, DescriptorSetId, DescriptorWrite, GpuBufferDesc,
+    GpuImageDesc, ImageId, PipelineDesc, PipelineId, PipelineKind, PresentMode, PrimitiveTopology,
+    QueryPoolDesc, QueryPoolId, RenderPassDesc, SamplerDesc, SamplerId, SwapchainDesc,
+    TextureFormat,
 };
 use super::vram::{BudgetSnapshot, VramAllocator, VramLease};
 use memory::{Allocation, MemoryState};
@@ -153,6 +154,9 @@ pub(crate) struct BufferEntry {
     pub(crate) buffer: vk::Buffer,
     pub(crate) allocation: Allocation,
     pub(crate) size: u64,
+    /// Флаги использования: staging-контракт проверяется по ним, а не по
+    /// свойствам памяти (на lavapipe вся память host-visible).
+    pub(crate) usage: BufferUsage,
 }
 
 /// Запись изображения в реестре ресурсов.
@@ -906,6 +910,7 @@ impl RhiDevice for VulkanDevice {
                 buffer,
                 allocation,
                 size: desc.size,
+                usage: desc.usage,
             },
         );
         Ok(BufferId(id))
@@ -1397,7 +1402,7 @@ impl RhiDevice for VulkanDevice {
             (
                 entry.allocation.memory,
                 entry.size,
-                entry.allocation.host_visible,
+                entry.allocation.host_visible && entry.usage.is_staging(),
             )
         };
         if !host_visible {
@@ -1435,7 +1440,7 @@ impl RhiDevice for VulkanDevice {
             (
                 entry.allocation.memory,
                 entry.size,
-                entry.allocation.host_visible,
+                entry.allocation.host_visible && entry.usage.is_staging(),
             )
         };
         if !host_visible {

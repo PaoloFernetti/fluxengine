@@ -170,6 +170,19 @@ impl BufferUsage {
             || self.transfer_dst
             || self.indirect
     }
+
+    /// Staging-контракт (ADR-0039): `transfer_src && transfer_dst` без
+    /// GPU-использования.
+    ///
+    /// Проверка идёт по флагам, а не по свойствам памяти: на software-бэкендах
+    /// (lavapipe) вся память host-visible, и проверка по памяти пропускала бы
+    /// storage-буферы.
+    #[must_use]
+    pub const fn is_staging(self) -> bool {
+        self.transfer_src
+            && self.transfer_dst
+            && !(self.vertex || self.index || self.uniform || self.storage || self.indirect)
+    }
 }
 
 /// Использование GPU-изображения.
