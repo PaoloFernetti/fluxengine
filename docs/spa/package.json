@@ -1,0 +1,26 @@
+{
+  "name": "fluxengine-docs-spa",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "FluxEngine documentation SPA — single-file build",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build && node scripts/copy-output.mjs",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "highlight.js": "^11.10.0",
+    "markdown-it": "^14.1.0",
+    "markdown-it-anchor": "^9.2.0",
+    "markdown-it-task-lists": "^2.1.1",
+    "mermaid": "^11.4.0",
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "vite": "^6.0.7",
+    "vite-plugin-singlefile": "^2.3.0"
+  }
+}

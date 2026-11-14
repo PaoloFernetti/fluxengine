@@ -22,3 +22,20 @@ rustc-ice-*.txt
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
+
+
+# Added by cargo
+
+/target
+
+crash-dumps/
+target/crash-dumps/
+
+plans/ 
+# DXC binaries (ADR-0038): vendored locally, not committed 
+tools/dxc/bin/* 
+!tools/dxc/bin/.gitkeep 
+tools/dxc/dxc 
+tools/dxc/dxc.exe 
+tools/dxc/LICENSE.TXT 
+tools/dxc/ThirdPartyNotices.txt 

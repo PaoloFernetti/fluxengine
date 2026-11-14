@@ -1,0 +1,20 @@
+[package]
+name = "flux-physics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Физика f64, collision, KCC"
+publish = false
+
+[dependencies]
+flux-core.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+ron.workspace = true
+
+[lints]
+workspace = true

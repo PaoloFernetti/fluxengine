@@ -1,0 +1,7 @@
+# Сюда кладутся бинарники DXC:
+#   dxc.exe
+#   dxcompiler.dll
+#   dxil.dll
+#   dxv.exe (опционально, для ручной валидации)
+# Источник: NuGet Microsoft.Direct3D.DXC / Windows SDK / Vulkan SDK.
+# Проверка: cargo run -p flux-assetc -- shader --check

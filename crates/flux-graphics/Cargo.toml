@@ -1,0 +1,29 @@
+[package]
+name = "flux-graphics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "RHI, Vulkan/DX12, Render Graph, PBR"
+publish = false
+
+[features]
+default = []
+# GPU-бэкенды: контракты доступны всегда, реализации — за feature-гейтами.
+vulkan = ["dep:ash"]
+dx12 = []
+
+[dependencies]
+flux-core.workspace = true
+flux-math.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+parking_lot.workspace = true
+# ADR-0034: Vulkan bindings, runtime-загрузка (feature `vulkan`).
+ash = { workspace = true, optional = true }
+
+[lints]
+workspace = true

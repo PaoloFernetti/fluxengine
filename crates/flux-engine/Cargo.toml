@@ -1,0 +1,29 @@
+[package]
+name = "flux-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "FluxEngine: фасад, точка сборки и главный цикл кадра"
+
+[dependencies]
+flux-core.workspace = true
+flux-ecs.workspace = true
+flux-graphics.workspace = true
+flux-math.workspace = true
+flux-physics.workspace = true
+ron.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tracing-subscriber.workspace = true
+winit.workspace = true
+softbuffer.workspace = true
+
+[lints]
+workspace = true

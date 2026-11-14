@@ -1,0 +1,168 @@
+# FluxEngine — ADR-процесс (Architecture Decision Records)
+
+ADR — фиксация значимого архитектурного решения: контекст, варианты, выбор,
+следствия. Один ADR = одно решение. ADR — неизменяем после принятия:
+изменение = новый ADR со статусом Supersedes.
+
+## Когда обязателен ADR
+
+Триггеры (любой из них — ADR, остальное решается в коде/PR):
+
+1. **Канон**: новое имя крейта/модуля, переименование, изменение структуры
+   workspace (правило из [canon.md](../canon.md)).
+2. **Контракт**: изменение сигнатуры trait-а из flux-core/contracts
+   (Renderer, ScriptVM, NetBackend...), таблиц владения, границ подсистем.
+3. **ABI контента**: G-buffer layout, формат .fpf, wire-протокол flux-net,
+   формат схем SchemaRegistry, формат треков секвенсора — всё, что ломает
+   контент или сеть при смене.
+4. **Сквозное правило**: детерминизм, паник-политика, бюджеты, throttling —
+   всё, что обязано выполняться более чем одной подсистемой.
+5. **Готовые зависимости**: принятие/отбрасывание внешней библиотеки
+   (как cpal, glam, mlua — и как Rapier был отброшен).
+6. **Отложенное с точкой расширения**: каждая «отложенная фича» с заделом
+   получает ADR (моддинг, секвенсор, консольные бэкенды).
+
+Не требует ADR: внутренняя реализация внутри крейта, не меняющая
+публичный API и канон; багфиксы; оптимизации в рамках бюджетов.
+
+## Жизненный цикл
+
+```mermaid
+flowchart LR
+    Draft[Draft] --> Review[Review: минимум 1 ревьюер]
+    Review --> Accepted[Accepted]
+    Review --> Rejected[Rejected: с причиной]
+    Accepted --> Superseded[Superseded новым ADR]
+    Accepted --> Deprecated[Deprecated: решение устарело, замены нет]
+```
+
+- **Draft** — файл `NNNN-slug.md`, дискуссия в PR.
+- **Accepted** — мерж; канон/план обновляются этим же PR (канон и ADR — атомарно).
+- **Superseded** — новый ADR указывает `Supersedes: NNNN`, старый получает
+  ссылку `Superseded by: MMMM`. Старый текст НЕ редактируется.
+- **Red-green правило**: ADR мержится вместе с реализацией или до неё;
+  «ADR в вакууме» не мержится (как и код без ADR при триггере).
+
+## Шаблон файла
+
+```markdown
+# NNNN. Заголовок решения
+
+- Статус: Draft | Accepted | Superseded by MMMM | Deprecated
+- Дата: YYYY-MM-DD
+- Затрагивает: flux-xxx, flux-yyy (крейты из канона)
+- Supersedes: NNNN (если есть)
+
+## Контекст
+Какая проблема/сила, почему решение нужно сейчас.
+
+## Варианты
+Рассмотренные альтернативы с плюсами/минусами (как в нашей практике:
+«своя физика f64 vs Rapier vs масштаб мира»).
+
+## Решение
+Что выбрано, одним абзацем + контракты/структуры, если появляются.
+
+## Следствия
+Плюсы, минусы/риски, что ломается, какие заделы требуются, этапность.
+```
+
+## Дисциплина
+
+- Нумерация сквозная, 4 цифры, slug — кириллица/латиница без пробелов.
+- Каждый ADR обновляет [canon.md](../canon.md) (канон/глоссарий)
+  и, при необходимости, [architecture.md](../architecture.md) —
+  в том же PR.
+- Каждый термин из ADR обязан иметь запись в глоссарии канона
+  (правило «термин имеет владельца»).
+
+## Индекс (ADR-0001…0027 — архитектурная фаза; 0028…0030 — этап 2; 0031…0033 — этап 3; 0034…0040 — этап 4)
+
+| ADR | Решение | Источник |
+|---|---|---|
+| 0001 | RHI + Vulkan/DX12 (свой слой, не wgpu) | графика |
+| 0002 | Собственная архетипная ECS | flux-ecs |
+| 0003 | Собственная физика на f64, Rapier не используется | flux-math/physics |
+| 0004 | Windows release-цель; Linux dev/CI; консоли — точка расширения | №16 |
+| 0005 | flux-graphics: единый крейт, rhi::vulkan/dx12 за feature-гейтами | компоновка |
+| 0006 | Крейт-модульная архитектура workspace, 18 единиц канона (16 крейтов + 2 инструмента) | canon.md |
+| 0007 | Детерминизм: fixed timestep + seeded-RNG + CI-гейт | №14/№15 |
+| 0008 | Координаты: канон i64 → sim f32 floating origin → рендер camera-relative; Reversed-Z | №17 |
+| 0009 | Asset-пайплайн: .fpf, flux-assetc, контент-hash UUID | №5/№20 |
+| 0010 | SaveState: двухслойная модель мира, flush→fence→evict | flux-scene |
+| 0011 | Streaming: ярусы релевантности 0–3, RelevanceSystem на 5 потребителей | flux-net/scene |
+| 0012 | Паник-политика: матрица по режимам, job system catch_unwind, FFI | №10 |
+| 0013 | Frame pacing: frames-in-flight ≠ swapchain, late-latch, Mailbox | №11 |
+| 0014 | Шейдерные пермутации: shader.json, 3 набора keywords, off-demand + fallback | №12 |
+| 0015 | Скриптинг: Lua 5.4 mlua, события/команды, instruction limit | №13 |
+| 0016 | GraphicsSettings: HardwareTier→Preset→гранулярность, FeatureRegistry | graphics |
+| 0017 | G-buffer layout + PBR-модель (GGX Smith h.c., multiscatter) — ABI | №19 |
+| 0018 | Тон-маппинг семейство ACES/AgX — художественный ABI | №19 |
+| 0019 | flux-build: DAG на content-hash, профили, дельта-патчи, трассировка как версионированный вход | №20 |
+| 0020 | Аудио-граф: голоса→шины→мастер, send/return, sidechain, аудио-LOD | №21 |
+| 0021 | Тестирование: инвариант-центричная пирамида, golden per-бэкенд, fuzzing, soak | №15 |
+| 0022 | Environment/SimTime/weather: данные в сцене, время в симуляции | environment |
+| 0023 | Миграции сейвов: SchemaRef/schema_rev, read-time, UUID полей с этапа 1 | миграции |
+| 0024 | KCC: чистая функция (state, intention, dt), client-owned, KCC-минимум этап 3, ядро физики этап 6 | flux-physics |
+| 0025 | Моддинг: отложено; задел — UUID-резолвинг VFS, слот подписи, правило модифицируемости | №22 |
+| 0026 | Секвенсор: отложено; sim-/presentation-треки, маркер трека | секвенсор |
+| 0027 | Engine tick/frame/acquire: цикл владеет вызывающий | flux-engine |
+| 0028 | flux-macros — служебный proc-macro пакет workspace; приёмка по именованному перечню, не по числу | flux-macros |
+| 0029 | Внешние зависимости этапа 2 (criterion/proptest dev-only) + бюджет тика 10k × 3 < 2 мс | flux-ecs |
+| 0030 | Формат SchemaRegistry и ComponentDelta: field_uuid, SchemaRef, единая дельта, детерминированный обход | flux-ecs |
+| 0031 | Input abstraction: scancode-модель, ActionValue, контексты, Intention-снапшот | flux-platform |
+| 0032 | Collision-минимум: тайлы, капсула/луч, свипы, детерминированный обход | flux-physics |
+| 0033 | Headless-платформа и детерминизм-харнесс: feature-гейт, same-binary CI | flux-platform/engine |
+| 0034 | Vulkan на `ash` (runtime-загрузка, feature `vulkan`), offscreen swapchain; surface — I3, PSO — I5 | flux-graphics |
+| 0035 | Shader ABI: SPIR-V, entry points, vertex layout v1, pipeline descriptors | flux-graphics |
+| 0036 | Шейдерные пермутации: `shader.json`, keyword-маски, off-demand fallback, кэш трёх уровней | flux-graphics |
+| 0037 | GPU query pools: timestamp-пулы RHI, `GpuProfiler::push_from_timestamps` | flux-graphics |
+| 0038 | DXC как вендорный тулчейн: LLVM/NCSA, `dxil.dll` из SDK, поиск и атрибуции | flux-assetc |
+| 0039 | Дескрипторные наборы (set 0, bindless-массивы), копирование buffer↔image, staging readback | flux-graphics |
+| 0040 | `flux-release`: Conventional Commits → semver, CHANGELOG, Cargo.toml, commit/tag; publish и GitHub Release opt-in | tools/flux-release |
+
+Дополнительные решения, зафиксированные в плане, но не требующие отдельных
+ADR-файлов (частично покрыты выше): input abstraction (flux-platform),
+undo × PIE × стриминг (flux-editor), golden-сейвы, virtual textures и прочие мелкие —
+поднимаются до ADR при первом изменении контракта.
+
+### Уточнения индекса (не изменение решений)
+
+- На момент ADR-0006 число единиц канона — **18** (16 крейтов + 2 инструмента);
+  плюс служебный proc-macro пакет `flux-macros` (не единица канона, ADR-0028) —
+  workspace members 19.
+- ADR-0040 добавляет третий инструмент `tools/flux-release`: актуально
+  **19** единиц канона (16 крейтов + 3 инструмента) и **20** workspace members;
+  см. канон-таблицу [canon.md](../canon.md). Формулировка ADR-0006 не
+  переписывается — ADR неизменяемы.
+- Этапность физики: **KCC-минимум — этап 3, ядро — этап 6**; актуальный
+  источник — [Roadmap.md](../Roadmap.md). Запись ADR-0024 приведена к ней.
+- Этап 4: surface/present перенесён с I3 на **итерацию после I4** (нужен
+  оконный handle); I3 — Render Graph, I4 — RenderScene/extract. Запись
+  ADR-0034 не переписывается, актуальный источник — [Roadmap.md](../Roadmap.md).
+- Правило: индекс отражает актуальные числа/этапы; формулировки решений в
+  ADR-файлах не переписываются, расхождение оформляется как уточнение здесь.
+
+## Соответствие: сквозные решения ↔ ADR
+
+Сквозные решения в [architecture.md](../architecture.md) нумеруются `№N`,
+ADR — `00NN`. Это разные пространства номеров. При добавлении ADR указывайте
+номер сквозного решения в колонке «Источник» индекса.
+
+| Сквозное решение | ADR |
+|---|---|
+| №5 контент-пайплайн | 0009 |
+| №7 TransferSystem | 0001, 0005 (реализация внутри flux-graphics) |
+| №10 паник-политика | 0012 |
+| №11 frame pacing | 0013 |
+| №12 шейдерные пермутации | 0014 |
+| №13 скриптинг | 0015 |
+| №14/№15 детерминизм | 0007, 0021 |
+| №16 платформы | 0004 |
+| №17 координаты | 0008 |
+| №19 G-buffer / PBR / тон-маппинг | 0017, 0018 |
+| №20 ассеты и сборка | 0009, 0019 |
+| №21 аудио | 0020 |
+| №22 моддинг | 0025 |
+| №23 миграции схем | 0023, 0030 |
+| №24 environment / SimTime | 0022 |

@@ -1,0 +1,25 @@
+* text=auto eol=lf
+
+*.rs text eol=lf
+*.toml text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.js text eol=lf
+*.mjs text eol=lf
+*.vue text eol=lf
+*.css text eol=lf
+*.json text eol=lf
+*.html text eol=lf
+*.hlsl text eol=lf
+*.shader.json text eol=lf
+
+# SPIR-V — бинарный артефакт DXC: нормализация EOL недопустима.
+*.spv binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.ico binary
+*.fpf binary
+*.pdb binary

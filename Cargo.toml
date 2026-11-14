@@ -1,0 +1,82 @@
+[workspace]
+resolver = "2"
+members = ["crates/*", "tools/flux-assetc", "tools/flux-build", "tools/flux-release"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT"
+repository = "https://github.com/PaoloFernetti/fluxengine"
+authors = ["Paolo Fernetti"]
+
+[workspace.dependencies]
+# Внутренние крейты (канон: docs/canon.md)
+flux-math = { path = "crates/flux-math" }
+flux-core = { path = "crates/flux-core" }
+flux-macros = { path = "crates/flux-macros" }
+flux-ecs = { path = "crates/flux-ecs" }
+flux-graphics = { path = "crates/flux-graphics" }
+flux-platform = { path = "crates/flux-platform" }
+flux-asset = { path = "crates/flux-asset" }
+flux-scene = { path = "crates/flux-scene" }
+flux-physics = { path = "crates/flux-physics" }
+flux-anim = { path = "crates/flux-anim" }
+flux-ai = { path = "crates/flux-ai" }
+flux-script = { path = "crates/flux-script" }
+flux-net = { path = "crates/flux-net" }
+flux-audio = { path = "crates/flux-audio" }
+flux-ui = { path = "crates/flux-ui" }
+flux-editor = { path = "crates/flux-editor" }
+flux-engine = { path = "crates/flux-engine" }
+
+# Внешние зависимости (единые версии)
+glam = { version = "0.29", default-features = false, features = ["std", "libm", "serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ron = "0.8"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+crossbeam-deque = "0.8"
+crossbeam-queue = "0.3"
+crossbeam-utils = "0.8"
+parking_lot = "0.12"
+uuid = { version = "1", features = ["v4", "v5", "serde"] }
+thread-priority = "2"
+winit = "0.30"
+softbuffer = "0.4"
+gilrs = "0.11"
+# Vulkan bindings (ADR-0034): runtime-загрузка, чтобы CI собирался без Vulkan SDK.
+ash = { version = "0.38", default-features = false, features = ["loaded", "debug"] }
+
+# Дерайвы (ADR-0028)
+syn = { version = "2", features = ["full", "extra-traits"] }
+quote = "1"
+proc-macro2 = "1"
+
+# Релиз-инструмент (ADR-0040)
+semver = "1"
+toml_edit = { version = "0.22", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+tempfile = "3"
+
+# Dev-only этапа 2 (ADR-0029)
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+proptest = "1"
+trybuild = "1"
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "warn"
+
+# panic = "unwind" обязателен: job system ловит паники через catch_unwind,
+# а crash handler пишет breadcrumbs (ADR-0012). Профиль test наследует dev.
+[profile.dev]
+panic = "unwind"
+
+[profile.release]
+panic = "unwind"

@@ -1,0 +1,34 @@
+[package]
+name = "flux-platform"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Окно, display, input, системные сервисы"
+publish = false
+
+[features]
+default = []
+# Оконный адаптер (winit). Headless-сборка — без него (ADR-0033).
+windowing = ["dep:winit"]
+# Геймпады и хаптика (gilrs).
+devices = ["dep:gilrs"]
+# Per-OS крэш-дампы.
+crash-dump = []
+
+[dependencies]
+flux-core.workspace = true
+serde.workspace = true
+ron.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+winit = { workspace = true, optional = true }
+gilrs = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,13 @@
+[package]
+name = "flux-script"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Lua 5.4, ScriptVM, песочница"
+publish = false
+
+[lints]
+workspace = true

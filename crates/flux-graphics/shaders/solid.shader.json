@@ -1,0 +1,14 @@
+{
+  "name": "solid",
+  "shader_uuid": 1,
+  "stages": {
+    "vertex": "fullscreen.vert.hlsl",
+    "fragment": "solid.frag.hlsl"
+  },
+  "pipeline_variants": [
+    { "name": "forward" }
+  ],
+  "keywords": [],
+  "vertex_inputs": [],
+  "bindings": []
+}
