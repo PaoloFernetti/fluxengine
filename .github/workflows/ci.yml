@@ -1,0 +1,212 @@
+name: CI
+
+on:
+  push:
+    branches: [dev]
+  pull_request:
+    branches: [dev, master]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: fmt + clippy + test + build (CPU-only)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable, MSVC)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cargo
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy (unwrap = deny)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace
+
+      - name: cargo build (release)
+        run: cargo build --workspace --release
+
+      - name: G4 golden gate (per-runner baseline)
+        run: cargo test -p flux-graphics --test golden_gate
+
+      - name: shader artifacts + PSO smoke (Vulkan if available)
+        run: cargo test -p flux-graphics --features vulkan --test vulkan_pso
+
+      - name: workspace members match the canon list
+        run: node tools/ci/check-workspace-members.mjs
+
+      - name: headless dependency rule
+        run: node tools/ci/check-headless-deps.mjs
+
+      - name: upload crash logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crash-logs
+          path: |
+            target/crash-dumps/
+            crash-dumps/
+          if-no-files-found: ignore
+
+  licenses:
+    name: cargo-deny (licenses, advisories)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses advisories
+
+  docs:
+    name: docs links + SPA build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: docs/spa/package-lock.json
+
+      - name: check relative links (case-sensitive)
+        run: node docs/scripts/check-links.mjs
+
+      - name: install SPA dependencies
+        run: npm ci
+        working-directory: docs/spa
+
+      - name: build single-file docs.html
+        run: npm run build
+        working-directory: docs/spa
+
+      - name: docs.html must be committed and up to date
+        run: git diff --exit-code -- docs.html
+
+  release-check:
+    name: conventional commits (flux-release)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release
+
+      - name: check Conventional Commits in the PR range
+        run: cargo run -p flux-release -- check --commits "origin/${{ github.base_ref }}..HEAD" --strict
+
+  release:
+    name: release (flux-release)
+    needs: [rust, licenses, docs]
+    if: |
+      github.ref == 'refs/heads/dev' &&
+      (github.event_name != 'push' || !contains(github.event.head_commit.message || '', 'chore(release):'))
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release
+
+      - name: configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: version, tag, push dev and GitHub Release (idempotent)
+        run: cargo run -p flux-release -- release --ci --push --github-release
+
+      - name: merge dev into master and push
+        run: |
+          git fetch origin master
+          git checkout -B master origin/master
+          git merge --ff-only dev
+          git push origin master
+
+  report-failure:
+    name: issue on dev failure
+    needs: [rust, licenses, docs, release]
+    if: failure() && github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: create or update issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const short = context.sha.substring(0, 7);
+            const title = `CI failure on dev: ${short}`;
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = [
+              '## CI failure on `dev`',
+              '',
+              `- Commit: \`${context.sha}\``,
+              `- Run: ${runUrl}`,
+              `- Author: @${context.actor}`,
+              '',
+              'Проверьте job `rust` (fmt/clippy/test/build), `licenses`, `docs` и `release`.',
+              'После исправления запушьте в `dev` — workflow запустится снова.',
+            ].join('\n');
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100,
+            });
+            const existing = issues.data.find((issue) => issue.title === title);
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+              });
+            }
