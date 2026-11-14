@@ -551,13 +551,18 @@ deadzone не теряет диапазон (rescale); rebinding roundtrip че�
 - [x] lavapipe в CI — job `vulkan-lavapipe` (`mesa-vulkan-drivers`,
       `FLUX_REQUIRE_VULKAN=1`): RHI-юниты и PSO-смоук без права на skip;
       job входит в `sync-master`
+- [x] PSO-кэш (I5, ADR-0034): `VkPipelineCache` на устройстве,
+      `RhiDevice::pipeline_cache`/`load_pipeline_cache`, `DeviceSignature`,
+      `PipelineCacheFile` — заголовок `FLUXPSO1` с подписью устройства,
+      атомарная запись и инвалидация при смене GPU/API/формата; PSO-смоук
+      перезапускает устройство и загружает блоб с диска
 - [ ] Окно/`VkSurfaceKHR` + `VkSwapchainKHR` (present-проход — I4)
-- [ ] PSO-кэш (SPIR-V и layout-описания — I5, ADR-0034) — после lavapipe:
-      приёмка «0 `vkCreate*Pipelines`» требует повторного запуска на GPU
 
 **Приёмка**: clear-color headless-кадр; validation без ошибок; leak-трекинг
-«выделено N — освобождено N». Оконный кадр — критерий I3 (surface требует
-оконного handle, ADR-0034).
+«выделено N — освобождено N»; кэш PSO переживает перезапуск устройства
+(непустой блоб читается и принимается драйвером), чужой кэш отвергается по
+подписи. Оконный кадр — критерий I3 (surface требует оконного handle,
+ADR-0034).
 
 ### 4.3 Transfer и ресурсы
 

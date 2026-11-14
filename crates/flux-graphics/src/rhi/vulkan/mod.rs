@@ -28,10 +28,10 @@ use super::error::RhiError;
 use super::swapchain::Swapchain;
 use super::types::{
     BackendKind, BindingKind, BufferId, BufferUsage, Capabilities, DescriptorBinding,
-    DescriptorResource, DescriptorSetDesc, DescriptorSetId, DescriptorWrite, GpuBufferDesc,
-    GpuImageDesc, ImageId, PipelineDesc, PipelineId, PipelineKind, PresentMode, PrimitiveTopology,
-    QueryPoolDesc, QueryPoolId, RenderPassDesc, SamplerDesc, SamplerId, SwapchainDesc,
-    TextureFormat,
+    DescriptorResource, DescriptorSetDesc, DescriptorSetId, DescriptorWrite, DeviceSignature,
+    GpuBufferDesc, GpuImageDesc, ImageId, PipelineDesc, PipelineId, PipelineKind, PresentMode,
+    PrimitiveTopology, QueryPoolDesc, QueryPoolId, RenderPassDesc, SamplerDesc, SamplerId,
+    SwapchainDesc, TextureFormat,
 };
 use super::vram::{BudgetSnapshot, VramAllocator, VramLease};
 use memory::{Allocation, MemoryState};
@@ -58,6 +58,8 @@ pub(crate) struct DeviceContext {
     pub(crate) caps: Capabilities,
     pub(crate) validation: Option<debug::DebugMessenger>,
     pub(crate) store: Mutex<ResourceStore>,
+    /// Кэш PSO (ADR-0034): общий для всех pipeline устройства.
+    pub(crate) pipeline_cache: Mutex<Option<vk::PipelineCache>>,
     api_version: u32,
     device_name: String,
 }
@@ -111,6 +113,10 @@ impl DeviceContext {
             }
             // SAFETY: pool is owned by the store and destroyed exactly once.
             unsafe { device.destroy_descriptor_pool(pool, None) };
+        }
+        if let Some(cache) = self.pipeline_cache.lock().take() {
+            // SAFETY: cache is owned by the context and destroyed exactly once.
+            unsafe { device.destroy_pipeline_cache(cache, None) };
         }
         for (_, layout) in std::mem::take(&mut store.descriptor_layouts) {
             // SAFETY: layout is owned by the store and destroyed exactly once.
@@ -592,6 +598,7 @@ const fn topology(topology: PrimitiveTopology) -> vk::PrimitiveTopology {
 fn build_pipeline(
     device: &ash::Device,
     store: &Mutex<ResourceStore>,
+    cache: vk::PipelineCache,
     desc: &PipelineDesc,
     modules: &mut Vec<vk::ShaderModule>,
     layout_slot: &mut Option<vk::PipelineLayout>,
@@ -715,11 +722,9 @@ fn build_pipeline(
                 .layout(layout)
                 .render_pass(render_pass)
                 .subpass(0);
-            // SAFETY: all descriptions outlive the call.
-            let pipelines = unsafe {
-                device.create_graphics_pipelines(vk::PipelineCache::null(), &[info], None)
-            }
-            .map_err(|(_, error)| convert::map_vk(error))?;
+            // SAFETY: all descriptions outlive the call; cache is owned by the context.
+            let pipelines = unsafe { device.create_graphics_pipelines(cache, &[info], None) }
+                .map_err(|(_, error)| convert::map_vk(error))?;
             Ok(pipelines[0])
         }
         PipelineKind::Compute => {
@@ -738,11 +743,9 @@ fn build_pipeline(
             let info = vk::ComputePipelineCreateInfo::default()
                 .stage(stage)
                 .layout(layout);
-            // SAFETY: all descriptions outlive the call.
-            let pipelines = unsafe {
-                device.create_compute_pipelines(vk::PipelineCache::null(), &[info], None)
-            }
-            .map_err(|(_, error)| convert::map_vk(error))?;
+            // SAFETY: all descriptions outlive the call; cache is owned by the context.
+            let pipelines = unsafe { device.create_compute_pipelines(cache, &[info], None) }
+                .map_err(|(_, error)| convert::map_vk(error))?;
             Ok(pipelines[0])
         }
     }
@@ -846,6 +849,42 @@ impl RhiDevice for VulkanDevice {
 
     fn capabilities(&self) -> &Capabilities {
         &self.context.caps
+    }
+
+    fn device_signature(&self) -> DeviceSignature {
+        DeviceSignature::new(
+            BackendKind::Vulkan,
+            self.context.device_name.clone(),
+            self.context.api_version,
+        )
+    }
+
+    fn pipeline_cache(&self) -> Result<Vec<u8>, RhiError> {
+        let cache = self
+            .context
+            .pipeline_cache
+            .lock()
+            .ok_or_else(|| RhiError::validation("pipeline cache is unavailable"))?;
+        // SAFETY: cache is owned by the context and alive while locked.
+        unsafe { self.context.device.get_pipeline_cache_data(cache) }.map_err(convert::map_vk)
+    }
+
+    fn load_pipeline_cache(&mut self, data: &[u8]) -> Result<(), RhiError> {
+        if data.is_empty() {
+            return Ok(());
+        }
+        let info = vk::PipelineCacheCreateInfo::default().initial_data(data);
+        // SAFETY: `data` outlives the call; the driver copies the blob.
+        let cache = match unsafe { self.context.device.create_pipeline_cache(&info, None) } {
+            Ok(cache) => cache,
+            Err(error) => return Err(convert::map_vk(error)),
+        };
+        let previous = self.context.pipeline_cache.lock().replace(cache);
+        if let Some(previous) = previous {
+            // SAFETY: the old cache is no longer used by any pipeline creation.
+            unsafe { self.context.device.destroy_pipeline_cache(previous, None) };
+        }
+        Ok(())
     }
 
     fn create_buffer(&mut self, desc: &GpuBufferDesc) -> Result<BufferId, RhiError> {
@@ -1110,11 +1149,17 @@ impl RhiDevice for VulkanDevice {
 
     fn create_pipeline(&mut self, desc: &PipelineDesc) -> Result<PipelineId, RhiError> {
         let device = &self.context.device;
+        let cache = self
+            .context
+            .pipeline_cache
+            .lock()
+            .unwrap_or(vk::PipelineCache::null());
         let mut modules = Vec::new();
         let mut layout_slot: Option<vk::PipelineLayout> = None;
         let result = build_pipeline(
             device,
             &self.context.store,
+            cache,
             desc,
             &mut modules,
             &mut layout_slot,
@@ -1546,6 +1591,20 @@ fn create_context(
             return Err(error);
         }
     };
+    let cache_info = vk::PipelineCacheCreateInfo::default();
+    // SAFETY: device is valid; an empty cache has no external dependencies.
+    let pipeline_cache = match unsafe { built.device.create_pipeline_cache(&cache_info, None) } {
+        Ok(cache) => cache,
+        Err(error) => {
+            // SAFETY: command pool and device are owned by `built`; instance is ours.
+            unsafe {
+                built.device.destroy_command_pool(built.command_pool, None);
+                built.device.destroy_device(None);
+                instance.destroy_instance(None);
+            }
+            return Err(convert::map_vk(error));
+        }
+    };
     let validation = if debug_enabled {
         debug::DebugMessenger::new(&entry, &instance)
     } else {
@@ -1562,6 +1621,7 @@ fn create_context(
         caps: built.caps,
         validation,
         store: Mutex::new(ResourceStore::new(built.memory)),
+        pipeline_cache: Mutex::new(Some(pipeline_cache)),
         api_version,
         device_name: built.device_name,
     })

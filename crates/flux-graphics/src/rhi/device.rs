@@ -6,8 +6,8 @@ use super::{
     swapchain::Swapchain,
     types::{
         BackendKind, BufferId, Capabilities, DescriptorSetDesc, DescriptorSetId, DescriptorWrite,
-        GpuBufferDesc, GpuImageDesc, ImageId, PipelineDesc, PipelineId, QueryPoolDesc, QueryPoolId,
-        SamplerDesc, SamplerId, SwapchainDesc,
+        DeviceSignature, GpuBufferDesc, GpuImageDesc, ImageId, PipelineDesc, PipelineId,
+        QueryPoolDesc, QueryPoolId, SamplerDesc, SamplerId, SwapchainDesc,
     },
 };
 
@@ -21,6 +21,29 @@ pub trait RhiDevice: Send {
 
     /// Возможности устройства.
     fn capabilities(&self) -> &Capabilities;
+
+    /// Подпись устройства для инвалидации дисковых кэшей (PSO).
+    fn device_signature(&self) -> DeviceSignature;
+
+    /// Сериализует текущий кэш PSO (блоб `VkPipelineCache`).
+    ///
+    /// Пустой вектор — драйвер ещё не накопил данные или бэкенд не кэширует
+    /// PSO. Блоб сохраняется на диск вместе с подписью устройства
+    /// (см. `PipelineCacheFile`).
+    ///
+    /// # Errors
+    ///
+    /// [`RhiError::Validation`] — драйвер не отдал данные кэша.
+    fn pipeline_cache(&self) -> Result<Vec<u8>, RhiError>;
+
+    /// Загружает блоб кэша PSO, полученный из [`RhiDevice::pipeline_cache`].
+    ///
+    /// Пустой блоб — no-op. Загрузка заменяет текущий кэш устройства.
+    ///
+    /// # Errors
+    ///
+    /// [`RhiError::Validation`] — драйвер отверг данные кэша.
+    fn load_pipeline_cache(&mut self, data: &[u8]) -> Result<(), RhiError>;
 
     /// Создаёт GPU-буфер.
     ///

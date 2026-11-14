@@ -26,6 +26,7 @@ Roadmap: [docs/Roadmap.md](../../docs/Roadmap.md). API: [docs/api.md](../../docs
 | `settings` | `GraphicsSettings` v1, `HardwareTier`/`QualityPreset`, FeatureRegistry | I7 ✅ |
 | `golden` | PSNR/SSIM, per-runner baselines, heatmap, `visual_change`-гейт | I8 ✅ |
 | `profile` | `GpuZone`, `GpuProfiler` — контракт для `FrameStats`/trace | I8 ✅ |
+| `pipeline_cache` | дисковый кэш PSO: заголовок с подписью устройства, инвалидация | I5 ✅ |
 
 ## Feature-гейты
 
@@ -67,6 +68,11 @@ flux-graphics = { workspace = true, features = ["vulkan"] }
   Пустые/битые шейдеры и неверный `kind` — `Validation` (ADR-0035).
 - `set_pipeline` биндит graphics/compute pipeline; `draw` требует graphics и
   активный render pass, `dispatch` — compute вне render pass.
+- Кэш PSO (I5): `VkPipelineCache` создаётся вместе с устройством и
+  используется всеми `create_pipeline`; `RhiDevice::pipeline_cache()` отдаёт
+  блоб, `load_pipeline_cache()` заменяет кэш данными с диска.
+  `PipelineCacheFile` хранит `FLUXPSO1`-заголовок с `DeviceSignature` и
+  атомарно пишет файл; при смене GPU/API/формата кэш инвалидируется.
 - Query pools (ADR-0037): timestamp-пулы, `reset_query_pool`/
   `write_timestamp`, `read_query_pool` с `TYPE_64 | WAIT`.
 - Дескрипторы (ADR-0039): set 0 через `PipelineDesc::with_bindings`

@@ -882,6 +882,50 @@ impl RenderPassDesc {
     }
 }
 
+/// Подпись устройства для инвалидации дисковых кэшей (PSO, ADR-0034).
+///
+/// Блоб `VkPipelineCache` валиден только для драйвера, который его создал:
+/// при смене устройства или версии API кэш сбрасывается, иначе драйвер
+/// получает данные чужого формата.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeviceSignature {
+    /// Бэкенд.
+    pub backend: BackendKind,
+    /// Имя физического устройства (`VkPhysicalDeviceProperties::deviceName`).
+    pub device_name: String,
+    /// Версия Vulkan API (0 для не-Vulkan бэкендов).
+    pub api_version: u32,
+}
+
+impl DeviceSignature {
+    /// Подпись устройства.
+    #[must_use]
+    pub fn new(backend: BackendKind, device_name: impl Into<String>, api_version: u32) -> Self {
+        Self {
+            backend,
+            device_name: device_name.into(),
+            api_version,
+        }
+    }
+
+    /// Стабильный хэш подписи (FNV-1a) для заголовка файла кэша.
+    #[must_use]
+    pub fn hash(&self) -> u64 {
+        const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+        const PRIME: u64 = 0x0000_0100_0000_01b3;
+        let mut hash = OFFSET;
+        for byte in self.backend.name().bytes().chain(self.device_name.bytes()) {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(PRIME);
+        }
+        for byte in self.api_version.to_le_bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(PRIME);
+        }
+        hash
+    }
+}
+
 /// Возможности устройства.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Capabilities {

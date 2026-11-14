@@ -21,10 +21,10 @@ pub use null::{NullCommandBuffer, NullDevice, NullSwapchain, NullVramAllocator};
 pub use swapchain::Swapchain;
 pub use types::{
     AddressMode, BackendKind, BindingKind, BufferId, BufferUsage, Capabilities, DescriptorBinding,
-    DescriptorResource, DescriptorSetDesc, DescriptorSetId, DescriptorWrite, FilterMode,
-    GpuBufferDesc, GpuImageDesc, ImageId, MipmapMode, PipelineDesc, PipelineId, PipelineKind,
-    PresentMode, PrimitiveTopology, QueryPoolDesc, QueryPoolId, RenderPassDesc, SamplerDesc,
-    SamplerId, SwapchainDesc, SwapchainId, TextureFormat, TextureUsage,
+    DescriptorResource, DescriptorSetDesc, DescriptorSetId, DescriptorWrite, DeviceSignature,
+    FilterMode, GpuBufferDesc, GpuImageDesc, ImageId, MipmapMode, PipelineDesc, PipelineId,
+    PipelineKind, PresentMode, PrimitiveTopology, QueryPoolDesc, QueryPoolId, RenderPassDesc,
+    SamplerDesc, SamplerId, SwapchainDesc, SwapchainId, TextureFormat, TextureUsage,
 };
 pub use vram::{BudgetSnapshot, Pressure, VramAllocator, VramLease};
 #[cfg(feature = "vulkan")]

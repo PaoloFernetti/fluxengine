@@ -10,8 +10,8 @@
 
 use flux_graphics::{
     BarrierBatch, BindingKind, BufferUsage, DescriptorBinding, DescriptorSetDesc, DescriptorWrite,
-    GpuBufferDesc, GpuImageDesc, ImageState, PipelineDesc, RenderPassDesc, RhiDevice,
-    TextureFormat, TextureUsage, VulkanDevice,
+    GpuBufferDesc, GpuImageDesc, ImageState, PipelineCacheFile, PipelineCacheLoad, PipelineDesc,
+    RenderPassDesc, RhiDevice, TextureFormat, TextureUsage, VulkanDevice,
 };
 
 const FULLSCREEN_VS: &[u8] = include_bytes!("../shaders/compiled/fullscreen.vert.spv");
@@ -97,6 +97,51 @@ fn solid_pipeline_draws_without_validation_errors() {
     assert!(device.destroy_pipeline(pipeline));
     assert_eq!(device.pipeline_count(), 0);
     assert!(device.destroy_image(target));
+}
+
+#[test]
+fn pipeline_cache_survives_device_restart() {
+    let Some(mut device) = runtime_device() else {
+        return;
+    };
+    let desc = PipelineDesc::graphics("solid", FULLSCREEN_VS, SOLID_FS)
+        .with_color_formats(COLOR_FORMATS)
+        .with_vertex_stride(0);
+    let pipeline = device.create_pipeline(&desc).unwrap();
+    device.wait_idle().unwrap();
+    let blob = device.pipeline_cache().unwrap();
+    assert!(
+        !blob.is_empty(),
+        "драйвер вернул пустой блоб VkPipelineCache после создания PSO"
+    );
+    let signature = device.device_signature();
+    let path = std::env::temp_dir().join(format!("flux-pso-smoke-{}.bin", std::process::id()));
+    let file = PipelineCacheFile::new(&path, signature.clone());
+    file.save(&blob).unwrap();
+    assert!(matches!(
+        file.load().unwrap(),
+        PipelineCacheLoad::Loaded(ref data) if data == &blob
+    ));
+    assert!(device.destroy_pipeline(pipeline));
+    drop(device);
+
+    // Второй «запуск»: новое устройство загружает блоб с диска и создаёт
+    // тот же PSO. Это проверяет формат и инвалидацию, а не счётчик
+    // компиляций драйвера (он недоступен через Vulkan API).
+    let Some(mut second) = runtime_device() else {
+        return;
+    };
+    assert_eq!(second.device_signature(), signature);
+    let PipelineCacheLoad::Loaded(loaded) = file.load().unwrap() else {
+        panic!("кэш PSO пропал между запусками");
+    };
+    assert_eq!(loaded, blob);
+    second.load_pipeline_cache(&loaded).unwrap();
+    let again = second.create_pipeline(&desc).unwrap();
+    second.wait_idle().unwrap();
+    assert!(!second.pipeline_cache().unwrap().is_empty());
+    assert!(second.destroy_pipeline(again));
+    let _ = std::fs::remove_file(&path);
 }
 
 #[test]

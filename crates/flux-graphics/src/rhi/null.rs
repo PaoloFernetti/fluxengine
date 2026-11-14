@@ -15,9 +15,10 @@ use super::{
     swapchain::Swapchain,
     types::{
         BackendKind, BindingKind, BufferId, BufferUsage, Capabilities, DescriptorBinding,
-        DescriptorResource, DescriptorSetDesc, DescriptorSetId, DescriptorWrite, GpuBufferDesc,
-        GpuImageDesc, ImageId, PipelineDesc, PipelineId, PresentMode, QueryPoolDesc, QueryPoolId,
-        RenderPassDesc, SamplerDesc, SamplerId, SwapchainDesc, SwapchainId, TextureFormat,
+        DescriptorResource, DescriptorSetDesc, DescriptorSetId, DescriptorWrite, DeviceSignature,
+        GpuBufferDesc, GpuImageDesc, ImageId, PipelineDesc, PipelineId, PresentMode, QueryPoolDesc,
+        QueryPoolId, RenderPassDesc, SamplerDesc, SamplerId, SwapchainDesc, SwapchainId,
+        TextureFormat,
     },
     vram::{BudgetSnapshot, Pressure, VramAllocator, VramLease},
 };
@@ -196,6 +197,8 @@ pub struct NullDevice {
     images: BTreeMap<u64, GpuImageDesc>,
     samplers: BTreeMap<u64, SamplerDesc>,
     pipelines: BTreeMap<u64, PipelineDesc>,
+    /// Эмуляция блоба `VkPipelineCache`: Null хранит его без разбора.
+    pipeline_cache: Vec<u8>,
     query_pools: BTreeMap<u64, u32>,
     descriptor_sets: BTreeMap<u64, NullDescriptorSet>,
     memory: SharedMemory,
@@ -227,6 +230,7 @@ impl NullDevice {
             images: BTreeMap::new(),
             samplers: BTreeMap::new(),
             pipelines: BTreeMap::new(),
+            pipeline_cache: Vec::new(),
             query_pools: BTreeMap::new(),
             descriptor_sets: BTreeMap::new(),
             memory: SharedMemory::default(),
@@ -328,6 +332,21 @@ impl RhiDevice for NullDevice {
 
     fn capabilities(&self) -> &Capabilities {
         &self.caps
+    }
+
+    fn device_signature(&self) -> DeviceSignature {
+        DeviceSignature::new(BackendKind::Null, "flux-null", 0)
+    }
+
+    fn pipeline_cache(&self) -> Result<Vec<u8>, RhiError> {
+        Ok(self.pipeline_cache.clone())
+    }
+
+    fn load_pipeline_cache(&mut self, data: &[u8]) -> Result<(), RhiError> {
+        // Null не компилирует PSO: блоб принимается и возвращается как есть.
+        self.pipeline_cache.clear();
+        self.pipeline_cache.extend_from_slice(data);
+        Ok(())
     }
 
     fn create_buffer(&mut self, desc: &GpuBufferDesc) -> Result<BufferId, RhiError> {
@@ -1486,5 +1505,22 @@ mod tests {
             device.read_buffer(hdr_readback).unwrap(),
             vec![0x00, 0x3C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3C]
         );
+    }
+
+    #[test]
+    fn pipeline_cache_roundtrips_and_signature_is_stable() {
+        let mut device = NullDevice::new();
+        assert!(device.pipeline_cache().unwrap().is_empty());
+        device.load_pipeline_cache(&[1, 2, 3, 4]).unwrap();
+        assert_eq!(device.pipeline_cache().unwrap(), vec![1, 2, 3, 4]);
+        device.load_pipeline_cache(&[]).unwrap();
+        assert!(device.pipeline_cache().unwrap().is_empty());
+
+        let signature = device.device_signature();
+        assert_eq!(signature.backend, BackendKind::Null);
+        assert_eq!(signature.device_name, "flux-null");
+        assert_eq!(signature.hash(), device.device_signature().hash());
+        let other = DeviceSignature::new(BackendKind::Vulkan, "flux-null", 0);
+        assert_ne!(signature.hash(), other.hash());
     }
 }

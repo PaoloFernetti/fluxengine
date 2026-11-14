@@ -14,6 +14,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod golden;
+pub mod pipeline_cache;
 pub mod profile;
 pub mod render;
 pub mod rhi;
@@ -22,6 +23,9 @@ pub mod shaders;
 
 pub use golden::{
     GoldenBaseline, GoldenError, GoldenSettings, GoldenStore, GoldenVerdict, Rgba8Image,
+};
+pub use pipeline_cache::{
+    PipelineCacheFile, PipelineCacheLoad, PIPELINE_CACHE_MAGIC, PIPELINE_CACHE_VERSION,
 };
 pub use profile::{GpuProfiler, GpuZone};
 pub use render::{

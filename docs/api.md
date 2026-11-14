@@ -6358,20 +6358,20 @@ use flux_core::memory::MemoryTag;
 use flux_graphics::{
     create_device, AliasSlot, BackendKind, BarrierBatch, BindingDecl, BudgetSnapshot, BufferId,
     BufferUsage, CacheStats, Camera, Capabilities, CommandBuffer, CompiledPass,
-    DeterministicCompiler, FeatureKind, GbufferLayout, GoldenBaseline, GoldenError,
+    DeterministicCompiler, DeviceSignature, FeatureKind, GbufferLayout, GoldenBaseline, GoldenError,
     GoldenSettings, GoldenStore, GoldenVerdict, GpuBufferDesc, GpuImageDesc, GpuProfiler, GpuZone,
     GraphError, GraphImage, GraphImageKey, GraphPass, GraphicsFeature, GraphicsFeatureRegistry,
     GraphicsSettings, HardwareTier, ImageBarrier, ImageId, ImageState, InFlightBatch, KeywordDecl,
     KeywordMask, KeywordSet, Material, NullCommandBuffer, NullDevice, NullVramAllocator, PassKind,
-    PermutationCache, PermutationRequest, PipelineDesc, PipelineId, PipelineKind, PipelineVariant,
-    PresentMode, Pressure, PrimitiveTopology, QualityPreset, QueryPoolDesc, QueryPoolId,
-    RenderGraph, RenderGraphPlan,
-    RenderPassDesc, RenderScene, ResolvedShader, ResourceEntry, ResourceKey, ResourceRegistry,
-    ResourceState, Rgba8Image, RhiDevice, RhiError, SettingsChange, ShaderCompiler,
-    ShaderDeclaration, ShaderError, ShaderLibrary, ShaderStage, Swapchain, SwapchainDesc,
-    SwapchainId, TextureFormat, TextureUsage, Tonemap, TransferSystem, UploadJob, VertexInput,
-    VramAllocator, VramBudget, VramLease, MAX_KEYWORDS, MAX_MATERIAL_KEYWORDS, MAX_RENDER_SCALE,
-    MAX_SHADOW_RESOLUTION, MIN_RENDER_SCALE, MIN_SHADOW_RESOLUTION, VERTEX_FORMAT_V1,
+    PermutationCache, PermutationRequest, PipelineCacheFile, PipelineCacheLoad, PipelineDesc,
+    PipelineId, PipelineKind, PipelineVariant, PresentMode, Pressure, PrimitiveTopology,
+    QualityPreset, QueryPoolDesc, QueryPoolId, RenderGraph, RenderGraphPlan, RenderPassDesc,
+    RenderScene, ResolvedShader, ResourceEntry, ResourceKey, ResourceRegistry, ResourceState,
+    Rgba8Image, RhiDevice, RhiError, SettingsChange, ShaderCompiler, ShaderDeclaration, ShaderError,
+    ShaderLibrary, ShaderStage, Swapchain, SwapchainDesc, SwapchainId, TextureFormat, TextureUsage,
+    Tonemap, TransferSystem, UploadJob, VertexInput, VramAllocator, VramBudget, VramLease,
+    MAX_KEYWORDS, MAX_MATERIAL_KEYWORDS, MAX_RENDER_SCALE, MAX_SHADOW_RESOLUTION,
+    MIN_RENDER_SCALE, MIN_SHADOW_RESOLUTION, VERTEX_FORMAT_V1,
 };
 ```
 
@@ -6908,6 +6908,42 @@ assert_eq!(device.backend(), BackendKind::Null);
 ```rust
 let device = NullDevice::new();
 assert_eq!(device.capabilities().backend, BackendKind::Null);
+```
+
+#### `RhiDevice::device_signature(&self) -> DeviceSignature`
+
+Подпись устройства для инвалидации дисковых кэшей (PSO): бэкенд, имя GPU и
+версия API. `Null` возвращает фиксированную подпись `flux-null`/0.
+
+```rust
+let device = NullDevice::new();
+let signature = device.device_signature();
+assert_eq!(signature.backend, BackendKind::Null);
+assert_eq!(signature.device_name, "flux-null");
+```
+
+#### `RhiDevice::pipeline_cache(&self) -> Result<Vec<u8>, RhiError>`
+
+Сериализует текущий кэш PSO. Пустой вектор — драйвер ещё не накопил данные.
+`Null` возвращает последний загруженный блоб (эмуляция без компиляции).
+
+```rust
+let mut device = NullDevice::new();
+assert!(device.pipeline_cache().unwrap().is_empty());
+device.load_pipeline_cache(&[1, 2, 3]).unwrap();
+assert_eq!(device.pipeline_cache().unwrap(), vec![1, 2, 3]);
+```
+
+#### `RhiDevice::load_pipeline_cache(&mut self, data) -> Result<(), RhiError>`
+
+Заменяет кэш PSO блобом с диска; пустой срез — no-op. В Vulkan создаётся
+новый `VkPipelineCache` с `initialData`, старый уничтожается. `Validation` —
+драйвер отверг данные.
+
+```rust
+let mut device = NullDevice::new();
+device.load_pipeline_cache(&[0xAA; 16]).unwrap();
+assert_eq!(device.pipeline_cache().unwrap().len(), 16);
 ```
 
 #### `RhiDevice::create_buffer(&mut self, desc) -> Result<BufferId, RhiError>`
@@ -7798,6 +7834,97 @@ assert!(matches!(
 ));
 ```
 
+### Кэш PSO на диске ✅
+
+Кэш драйвера (`VkPipelineCache`) валиден только для создавшего его устройства,
+поэтому файл привязан к [`DeviceSignature`]: `backend`, `device_name`,
+`api_version`. Заголовок детерминирован (little-endian):
+`FLUXPSO1 | version u32 | signature_hash u64 | payload_len u64 | payload`.
+Запись атомарная (временный файл + переименование), чтение чужого/битого
+файла возвращает `Invalid` — приложение пересобирает PSO и перезаписывает кэш.
+
+#### `DeviceSignature`
+
+Подпись устройства. `hash()` — стабильный FNV-1a по бэкенду, имени и версии API.
+
+```rust
+let a = DeviceSignature::new(BackendKind::Vulkan, "GPU A", 0x0040_0000);
+let b = DeviceSignature::new(BackendKind::Vulkan, "GPU B", 0x0040_0000);
+assert_eq!(a, a.clone());
+assert_ne!(a.hash(), b.hash());
+assert_ne!(a.hash(), 0);
+```
+
+#### `PipelineCacheFile::new(path, signature) -> Self`
+
+Описатель файла кэша; диск не трогается до `load`/`save`.
+
+```rust
+let signature = DeviceSignature::new(BackendKind::Null, "flux-null", 0);
+let file = PipelineCacheFile::new("target/pso.cache", signature);
+assert_eq!(file.path().to_string_lossy(), "target/pso.cache");
+assert_eq!(file.signature().device_name, "flux-null");
+```
+
+#### `PipelineCacheFile::load(&self) -> io::Result<PipelineCacheLoad>`
+
+`Missing` — файла нет (первый запуск); `Loaded(blob)` — блоб принадлежит
+устройству; `Invalid(reason)` — магия, версия формата, подпись устройства или
+длина не совпали.
+
+```rust
+let signature = DeviceSignature::new(BackendKind::Null, "flux-null", 0);
+let path = std::env::temp_dir().join("flux-api-pso-load.bin");
+let file = PipelineCacheFile::new(&path, signature);
+assert_eq!(file.load().unwrap(), PipelineCacheLoad::Missing);
+file.save(&[1, 2, 3]).unwrap();
+assert_eq!(file.load().unwrap(), PipelineCacheLoad::Loaded(vec![1, 2, 3]));
+let _ = file.invalidate();
+```
+
+#### `PipelineCacheFile::save(&self, data) -> io::Result<()>`
+
+Создаёт каталог, пишет заголовок и блоб во временный файл, затем переименовывает.
+
+```rust
+let path = std::env::temp_dir().join("flux-api-pso-save.bin");
+let file = PipelineCacheFile::new(
+    &path,
+    DeviceSignature::new(BackendKind::Null, "flux-null", 0),
+);
+file.save(&[0xAB; 32]).unwrap();
+assert!(matches!(
+    file.load().unwrap(),
+    PipelineCacheLoad::Loaded(ref data) if data.len() == 32
+));
+let _ = file.invalidate();
+```
+
+#### `PipelineCacheFile::invalidate(&self) -> io::Result<bool>`
+
+Удаляет файл; `false` — файла не было.
+
+```rust
+let path = std::env::temp_dir().join("flux-api-pso-invalidate.bin");
+let file = PipelineCacheFile::new(
+    &path,
+    DeviceSignature::new(BackendKind::Null, "flux-null", 0),
+);
+file.save(&[7; 8]).unwrap();
+assert!(file.invalidate().unwrap());
+assert!(!file.invalidate().unwrap());
+```
+
+#### `PIPELINE_CACHE_MAGIC`, `PIPELINE_CACHE_VERSION`
+
+Магия `FLUXPSO1` и версия формата заголовка (`1`); меняются при изменении
+раскладки файла, что автоматически инвалидирует старые кэши.
+
+```rust
+assert_eq!(&PIPELINE_CACHE_MAGIC, b"FLUXPSO1");
+assert_eq!(PIPELINE_CACHE_VERSION, 1);
+```
+
 ### Vulkan backend (feature `vulkan`) ✅
 
 Бэкенд включается feature-гейтом и загружает Vulkan loader в рантайме
@@ -7815,7 +7942,9 @@ render pass/framebuffer, offscreen swapchain, барьеры состояний 
 leak-трекинг. В I5 добавлены реальные graphics/compute pipeline из SPIR-V:
 shader modules, `PipelineLayout` без дескрипторов, vertex input (позиция
 `R32G32B32_SFLOAT`, stride 12), dynamic viewport/scissor, blend disable,
-render pass из форматов `PipelineDesc`. Дескрипторы/bindless — следующий шаг.
+render pass из форматов `PipelineDesc`. Кэш PSO создаётся вместе с
+устройством: `pipeline_cache`/`load_pipeline_cache` отдают и принимают блоб
+`VkPipelineCache`, дисковое хранение — `PipelineCacheFile` (раздел выше).
 
 #### `VulkanDevice::new() -> Result<Self, RhiError>`
 
