@@ -39,10 +39,11 @@ pub use rhi::VulkanDevice;
 pub use rhi::{
     create_device, BackendKind, BarrierBatch, BindingKind, BudgetSnapshot, BufferId, BufferUsage,
     Capabilities, CommandBuffer, DescriptorBinding, DescriptorResource, DescriptorSetDesc,
-    DescriptorSetId, DescriptorWrite, GpuBufferDesc, GpuImageDesc, ImageBarrier, ImageId,
-    ImageState, NullDevice, NullVramAllocator, PipelineDesc, PipelineId, PipelineKind, PresentMode,
-    Pressure, PrimitiveTopology, RenderPassDesc, RhiDevice, RhiError, Swapchain, SwapchainDesc,
-    SwapchainId, TextureFormat, TextureUsage, VramAllocator, VramLease,
+    DescriptorSetId, DescriptorWrite, DeviceSignature, GpuBufferDesc, GpuImageDesc, ImageBarrier,
+    ImageId, ImageState, NullDevice, NullVramAllocator, PipelineDesc, PipelineId, PipelineKind,
+    PresentMode, Pressure, PrimitiveTopology, RenderPassDesc, RhiDevice, RhiError, SurfaceId,
+    SurfaceKind, SurfaceTarget, Swapchain, SwapchainDesc, SwapchainId, TextureFormat, TextureUsage,
+    VramAllocator, VramLease, WindowSurface,
 };
 pub use settings::{
     FeatureKind, GraphicsFeature, GraphicsFeatureRegistry, GraphicsSettings, HardwareTier,

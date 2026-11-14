@@ -7,7 +7,8 @@ use super::{
     types::{
         BackendKind, BufferId, Capabilities, DescriptorSetDesc, DescriptorSetId, DescriptorWrite,
         DeviceSignature, GpuBufferDesc, GpuImageDesc, ImageId, PipelineDesc, PipelineId,
-        QueryPoolDesc, QueryPoolId, SamplerDesc, SamplerId, SwapchainDesc,
+        QueryPoolDesc, QueryPoolId, SamplerDesc, SamplerId, SurfaceId, SurfaceTarget,
+        SwapchainDesc,
     },
 };
 
@@ -152,12 +153,31 @@ pub trait RhiDevice: Send {
     /// Создаёт командный буфер.
     fn create_command_buffer(&mut self) -> Result<Box<dyn CommandBuffer>, RhiError>;
 
+    /// Создаёт поверхность представления из окна или headless-таргета.
+    ///
+    /// Оконные дескрипторы берутся из `raw-window-handle` 0.6
+    /// ([`SurfaceTarget`]); владелец окна держит его живым, пока живёт
+    /// поверхность.
+    ///
+    /// # Errors
+    ///
+    /// [`RhiError::Unsupported`] — платформа/расширение поверхности
+    /// недоступны; [`RhiError::Surface`] — драйвер отверг дескрипторы.
+    fn create_surface(&mut self, target: &SurfaceTarget) -> Result<SurfaceId, RhiError>;
+
+    /// Уничтожает поверхность. `false` — хэндл неизвестен/уже уничтожен.
+    fn destroy_surface(&mut self, id: SurfaceId) -> bool;
+
     /// Создаёт swapchain для окна/таргета.
+    ///
+    /// `desc.surface == None` — offscreen swapchain; иначе создаётся
+    /// `VkSwapchainKHR` для поверхности ([`SwapchainDesc::with_surface`]).
     ///
     /// # Errors
     ///
     /// [`RhiError::Validation`] — размер/формат/режим не поддержан;
-    /// [`RhiError::Surface`] — поверхность недоступна.
+    /// [`RhiError::Surface`] — поверхность недоступна или очередь не умеет
+    /// представлять.
     fn create_swapchain(&mut self, desc: &SwapchainDesc) -> Result<Box<dyn Swapchain>, RhiError>;
 
     /// Ждёт завершения всех GPU-работ.

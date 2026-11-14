@@ -141,6 +141,13 @@ undo × PIE × стриминг (flux-editor), golden-сейвы, virtual textur
 - Этап 4: surface/present перенесён с I3 на **итерацию после I4** (нужен
   оконный handle); I3 — Render Graph, I4 — RenderScene/extract. Запись
   ADR-0034 не переписывается, актуальный источник — [Roadmap.md](../Roadmap.md).
+- Surface/present реализованы в 4.2 на `raw-window-handle` 0.6: RHI принимает
+  `SurfaceTarget::Window` (win32/xlib/xcb/wayland) и `SurfaceTarget::Headless`
+  (`VK_EXT_headless_surface` для CI/lavapipe), `SwapchainDesc::with_surface`
+  создаёт настоящий `VkSwapchainKHR`. ADR-0034 допускал `raw-window-handle`
+  «при необходимости — отдельный ADR»; отдельный ADR не потребовался:
+  контракт I0 не менялся, добавлены методы поверхности. Формулировка
+  ADR-0034 не переписывается.
 - ADR-0041 закрывает блокер, зафиксированный в ADR-0039 («до отдельного ADR
   по сэмплерам реализуемы только проходы без чтения текстур»): чтение текстур
   разрешено, `CombinedImageSampler` оставлен только для совместимости.

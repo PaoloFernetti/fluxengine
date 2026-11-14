@@ -19,6 +19,9 @@ pub trait Swapchain: Send {
     /// Текущий размер `(width, height)`.
     fn size(&self) -> (u32, u32);
 
+    /// Число образов в цепочке.
+    fn image_count(&self) -> usize;
+
     /// Пересоздаёт изображения под новый размер.
     ///
     /// # Errors

@@ -42,6 +42,7 @@
 | 4 | I8 | `flux-graphics::golden`: PSNR/SSIM, per-runner baselines, heatmap; `flux-graphics::profile`: `GpuZone`, `GpuProfiler` |
 | 4 | I6b | `tools/flux-assetc shader` (DXC → SPIR-V); RHI query pools (`QueryPoolDesc`, `write_timestamp`, `read_query_pool`); G4-гейт |
 | 4 | I9 | RHI для GPU-проходов: дескрипторные наборы (`BindingKind`, `DescriptorSetDesc`, `DescriptorWrite`), `bind_descriptor_set`, `copy_buffer_to_image`/`copy_image_to_buffer`, `write_buffer`/`read_buffer` (ADR-0039) |
+| 4 | I9b | поверхности (`VkSurfaceKHR`) и present-swapchain (`VkSwapchainKHR`): `SurfaceTarget`/`WindowSurface`, headless WSI, `Swapchain::image_count` |
 | — | release | `tools/flux-release`: Conventional Commits → semver, версия `Cargo.toml`, `CHANGELOG.md`, commit/annotated tag; pre-release, монорепо fixed/independent, opt-in publish/gh/semver-checks (ADR-0040) |
 
 ## Общие конвенции
@@ -6368,10 +6369,11 @@ use flux_graphics::{
     QualityPreset, QueryPoolDesc, QueryPoolId, RenderGraph, RenderGraphPlan, RenderPassDesc,
     RenderScene, ResolvedShader, ResourceEntry, ResourceKey, ResourceRegistry, ResourceState,
     Rgba8Image, RhiDevice, RhiError, SettingsChange, ShaderCompiler, ShaderDeclaration, ShaderError,
-    ShaderLibrary, ShaderStage, Swapchain, SwapchainDesc, SwapchainId, TextureFormat, TextureUsage,
-    Tonemap, TransferSystem, UploadJob, VertexInput, VramAllocator, VramBudget, VramLease,
-    MAX_KEYWORDS, MAX_MATERIAL_KEYWORDS, MAX_RENDER_SCALE, MAX_SHADOW_RESOLUTION,
-    MIN_RENDER_SCALE, MIN_SHADOW_RESOLUTION, VERTEX_FORMAT_V1,
+    ShaderLibrary, ShaderStage, SurfaceId, SurfaceKind, SurfaceTarget, Swapchain, SwapchainDesc,
+    SwapchainId, TextureFormat, TextureUsage, Tonemap, TransferSystem, UploadJob, VertexInput,
+    VramAllocator, VramBudget, VramLease, WindowSurface, MAX_KEYWORDS, MAX_MATERIAL_KEYWORDS,
+    MAX_RENDER_SCALE, MAX_SHADOW_RESOLUTION, MIN_RENDER_SCALE, MIN_SHADOW_RESOLUTION,
+    VERTEX_FORMAT_V1,
 };
 ```
 
@@ -6589,6 +6591,14 @@ assert_eq!(PipelineId(1).0, 1);
 assert_eq!(SwapchainId(0).0, 0);
 ```
 
+#### `SurfaceId(pub u64)`
+
+Хэндл поверхности представления (`VkSurfaceKHR`).
+
+```rust
+assert_eq!(SurfaceId(2).0, 2);
+```
+
 #### `GpuBufferDesc::new(label, size, usage) -> Self`
 
 Дескриптор GPU-буфера.
@@ -6660,6 +6670,18 @@ assert_eq!(desc.present_mode, PresentMode::Mailbox);
 ```rust
 let desc = SwapchainDesc::new("main", 1280, 720).with_frames_in_flight(3);
 assert_eq!(desc.frames_in_flight, 3);
+```
+
+#### `SwapchainDesc::with_surface(self, surface) -> Self`
+
+Привязывает swapchain к поверхности представления: вместо offscreen-таргета
+создаётся настоящий `VkSwapchainKHR` (present через `acquire`/`present`).
+Без поверхности swapchain остаётся offscreen.
+
+```rust
+let desc = SwapchainDesc::new("main", 1280, 720).with_surface(SurfaceId(0));
+assert_eq!(desc.surface, Some(SurfaceId(0)));
+assert_eq!(SwapchainDesc::new("offscreen", 64, 64).surface, None);
 ```
 
 #### `QueryPoolDesc::new(label, count) -> Self`
@@ -6825,6 +6847,54 @@ assert!(Capabilities::headless().supports_color_format(TextureFormat::Rgba8Srgb)
 
 ```rust
 assert!(Capabilities::headless().supports_depth_format(TextureFormat::D32Float));
+```
+
+### Поверхности представления ✅
+
+RHI не зависит от оконной библиотеки: поверхность описывается стандартными
+`raw-window-handle` 0.6 дескрипторами (`WindowSurface`) либо headless-таргетом
+(`SurfaceTarget::Headless`, `VK_EXT_headless_surface`) для CI/lavapipe.
+Поверхность создаётся на устройстве и передаётся в
+`SwapchainDesc::with_surface`; без неё swapchain остаётся offscreen.
+Владелец окна держит его живым, пока живёт поверхность.
+
+#### `WindowSurface`
+
+Сырые дескрипторы окна и дисплея (`RawWindowHandle`/`RawDisplayHandle`);
+поля публичные — `window`, `display`.
+
+#### `WindowSurface::new(window, display) -> Self`
+
+Поверхность из готовых сырых дескрипторов.
+
+#### `WindowSurface::from_provider(provider) -> Result<Self, RhiError>`
+
+Берёт дескрипторы у провайдера `HasWindowHandle + HasDisplayHandle`
+(например, `winit::Window`). `RhiError::Surface` — провайдер не отдал
+дескриптор окна или дисплея.
+
+#### `SurfaceTarget`
+
+Источник поверхности: `Headless` (CI/тесты) или `Window(WindowSurface)`.
+
+#### `SurfaceTarget::window(provider) -> Result<Self, RhiError>`
+
+Оконный таргет из `raw-window-handle`-провайдера.
+
+#### `SurfaceTarget::kind(&self) -> SurfaceKind`
+
+Вид таргета без платформенных указателей.
+
+#### `SurfaceKind`
+
+`Headless` или `Window`; `Serialize`/`Deserialize` — для диагностики,
+конфигов и CI-отчётов.
+
+```rust
+let mut device = NullDevice::new();
+let surface = device.create_surface(&SurfaceTarget::Headless).unwrap();
+assert_eq!(device.surface_kind(surface), Some(SurfaceKind::Headless));
+assert_eq!(SurfaceTarget::Headless.kind(), SurfaceKind::Headless);
 ```
 
 ### RhiError ✅
@@ -7137,15 +7207,49 @@ cmd.begin().unwrap();
 cmd.end().unwrap();
 ```
 
+#### `RhiDevice::create_surface(&mut self, target) -> Result<SurfaceId, RhiError>`
+
+Создаёт поверхность представления из окна (`SurfaceTarget::Window`, через
+`raw-window-handle` 0.6) или headless-таргета (`SurfaceTarget::Headless`).
+Владелец окна держит его живым, пока живёт поверхность.
+
+- `Unsupported` — платформа/расширение поверхности недоступны (например,
+  нет `VK_EXT_headless_surface`);
+- `Surface` — драйвер отверг дескрипторы окна/дисплея.
+
+```rust
+let mut device = NullDevice::new();
+let surface = device.create_surface(&SurfaceTarget::Headless).unwrap();
+assert_eq!(device.surface_count(), 1);
+assert!(device.destroy_surface(surface));
+assert_eq!(device.surface_count(), 0);
+```
+
+#### `RhiDevice::destroy_surface(&mut self, id) -> bool`
+
+Уничтожает поверхность; `false` — хэндл неизвестен или уже уничтожен.
+
 #### `RhiDevice::create_swapchain(&mut self, desc) -> Result<Box<dyn Swapchain>, RhiError>`
 
 Создаёт swapchain. Проверяет размер, формат, present mode и
-`frames_in_flight`.
+`frames_in_flight`. `desc.surface == None` — offscreen swapchain; с
+`SwapchainDesc::with_surface` создаётся настоящий `VkSwapchainKHR` для
+поверхности. Неизвестная поверхность — `InvalidHandle { kind: "surface" }`,
+неподдерживаемая очередь/расширение — `Surface`.
 
 ```rust
 let mut device = NullDevice::new();
 let swapchain = device.create_swapchain(&SwapchainDesc::new("main", 1280, 720)).unwrap();
 assert_eq!(swapchain.size(), (1280, 720));
+```
+
+```rust
+let mut device = NullDevice::new();
+let surface = device.create_surface(&SurfaceTarget::Headless).unwrap();
+let desc = SwapchainDesc::new("present", 64, 64).with_surface(surface);
+let mut swapchain = device.create_swapchain(&desc).unwrap();
+let index = swapchain.acquire().unwrap();
+swapchain.present(index).unwrap();
 ```
 
 #### `RhiDevice::wait_idle(&mut self) -> Result<(), RhiError>`
@@ -7197,6 +7301,19 @@ assert_eq!(swapchain.present_mode(), PresentMode::Fifo);
 let mut device = NullDevice::new();
 let swapchain = device.create_swapchain(&SwapchainDesc::new("main", 800, 600)).unwrap();
 assert_eq!(swapchain.size(), (800, 600));
+```
+
+#### `Swapchain::image_count(&self) -> usize`
+
+Число образов в цепочке: у Vulkan — реальные образы `VkSwapchainKHR`,
+у Null — `frames_in_flight`. Может измениться после `resize`.
+
+```rust
+let mut device = NullDevice::new();
+let mut swapchain = device.create_swapchain(&SwapchainDesc::new("main", 64, 64)).unwrap();
+assert_eq!(swapchain.image_count(), 2);
+swapchain.resize(1280, 720).unwrap();
+assert_eq!(swapchain.image_count(), 2);
 ```
 
 #### `Swapchain::resize(&mut self, width, height) -> Result<(), RhiError>`
@@ -7621,6 +7738,29 @@ device.create_image(&GpuImageDesc::new("tex", 8, 8, TextureFormat::Rgba8Srgb)).u
 assert_eq!(device.image_count(), 1);
 ```
 
+#### `NullDevice::surface_count(&self) -> usize`
+
+Число живых поверхностей.
+
+```rust
+let mut device = NullDevice::new();
+let surface = device.create_surface(&SurfaceTarget::Headless).unwrap();
+assert_eq!(device.surface_count(), 1);
+device.destroy_surface(surface);
+assert_eq!(device.surface_count(), 0);
+```
+
+#### `NullDevice::surface_kind(&self, id) -> Option<SurfaceKind>`
+
+Вид созданной поверхности; `None` — хэндл неизвестен. Null хранит только
+вид: платформенные указатели не нужны и не пересекают потоки.
+
+```rust
+let mut device = NullDevice::new();
+let surface = device.create_surface(&SurfaceTarget::Headless).unwrap();
+assert_eq!(device.surface_kind(surface), Some(SurfaceKind::Headless));
+```
+
 #### `NullDevice::pipeline_count(&self) -> usize`
 
 Число живых pipeline.
@@ -7946,6 +8086,14 @@ render pass из форматов `PipelineDesc`. Кэш PSO создаётся 
 устройством: `pipeline_cache`/`load_pipeline_cache` отдают и принимают блоб
 `VkPipelineCache`, дисковое хранение — `PipelineCacheFile` (раздел выше).
 
+Поверхности и present: `create_surface` создаёт `VkSurfaceKHR` из
+`SurfaceTarget` (win32/xlib/xcb/wayland или `VK_EXT_headless_surface`),
+`create_swapchain` с `SwapchainDesc::surface` — настоящий `VkSwapchainKHR`
+(`VulkanPresentSwapchain`): выбор формата/present mode/composite alpha,
+acquire через fence, переход образа `UNDEFINED → PRESENT_SRC_KHR` и
+`vkQueuePresentKHR`; `resize` пересоздаёт цепочку после `device_wait_idle`.
+`VK_KHR_swapchain` включается на устройстве, если доступен.
+
 #### `VulkanDevice::new() -> Result<Self, RhiError>`
 
 Создаёт Vulkan-устройство.
@@ -8002,8 +8150,9 @@ match VulkanDevice::new() {
 - Буферы и изображения создаются с реальной `VkDeviceMemory`; при ошибке
   выделения возвращается `OutOfMemory`, частично созданные объекты
   уничтожаются.
-- `create_swapchain` создаёт offscreen-таргет: `VkSwapchainKHR` требует
-  `VkSurfaceKHR` из окна и появится вместе с present-проходом (I4).
+- `create_swapchain` без `desc.surface` создаёт offscreen-таргет; с
+  поверхностью — `VkSwapchainKHR` и present через `vkQueuePresentKHR`
+  (headless WSI на lavapipe; окно на реальном `winit` — после 3.1).
 - Барьеры `ImageState` транслируются в stage/access/layout; depth clear —
   `0.0` для Reversed-Z (ADR-0008).
 - `create_pipeline` собирает `VkPipeline` из SPIR-V; пустые или битые

@@ -7,7 +7,7 @@ use ash::vk;
 use super::super::cmd::ImageState;
 use super::super::error::RhiError;
 use super::super::types::{
-    AddressMode, BufferUsage, FilterMode, MipmapMode, TextureFormat, TextureUsage,
+    AddressMode, BufferUsage, FilterMode, MipmapMode, PresentMode, TextureFormat, TextureUsage,
 };
 
 /// Отображает `vk::Result` в типизированную ошибку RHI.
@@ -44,6 +44,38 @@ pub(crate) const fn address(mode: AddressMode) -> vk::SamplerAddressMode {
         AddressMode::Repeat => vk::SamplerAddressMode::REPEAT,
         AddressMode::MirrorRepeat => vk::SamplerAddressMode::MIRRORED_REPEAT,
         AddressMode::ClampToBorder => vk::SamplerAddressMode::CLAMP_TO_BORDER,
+    }
+}
+
+/// RHI-формат для формата поверхности Vulkan.
+pub(crate) const fn texture_format(format: vk::Format) -> Option<TextureFormat> {
+    match format {
+        vk::Format::R8G8B8A8_SRGB => Some(TextureFormat::Rgba8Srgb),
+        vk::Format::R8G8B8A8_UNORM => Some(TextureFormat::Rgba8Unorm),
+        vk::Format::B8G8R8A8_SRGB => Some(TextureFormat::Bgra8Srgb),
+        vk::Format::R16G16B16A16_SFLOAT => Some(TextureFormat::Rgba16Float),
+        vk::Format::R8_UNORM => Some(TextureFormat::R8Unorm),
+        vk::Format::D32_SFLOAT => Some(TextureFormat::D32Float),
+        _ => None,
+    }
+}
+
+/// Режим представления Vulkan для RHI-режима.
+pub(crate) const fn present_mode(mode: PresentMode) -> vk::PresentModeKHR {
+    match mode {
+        PresentMode::Fifo => vk::PresentModeKHR::FIFO,
+        PresentMode::Mailbox => vk::PresentModeKHR::MAILBOX,
+        PresentMode::Immediate => vk::PresentModeKHR::IMMEDIATE,
+    }
+}
+
+/// RHI-режим для режима представления Vulkan.
+pub(crate) const fn rhi_present_mode(mode: vk::PresentModeKHR) -> Option<PresentMode> {
+    match mode {
+        vk::PresentModeKHR::FIFO => Some(PresentMode::Fifo),
+        vk::PresentModeKHR::MAILBOX => Some(PresentMode::Mailbox),
+        vk::PresentModeKHR::IMMEDIATE => Some(PresentMode::Immediate),
+        _ => None,
     }
 }
 

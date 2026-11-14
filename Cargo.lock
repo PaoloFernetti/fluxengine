@@ -774,6 +774,7 @@ dependencies = [
  "flux-core",
  "flux-math",
  "parking_lot",
+ "raw-window-handle",
  "serde",
  "serde_json",
  "thiserror 1.0.69",

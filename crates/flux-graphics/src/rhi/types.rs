@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::error::RhiError;
+
 /// Графический бэкенд.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum BackendKind {
@@ -301,6 +303,93 @@ handle!(DescriptorSetId, "Хэндл дескрипторного набора."
 handle!(SwapchainId, "Хэндл swapchain.");
 handle!(QueryPoolId, "Хэндл пула GPU-запросов (таймстемпы).");
 handle!(SamplerId, "Хэндл сэмплера (ADR-0041).");
+handle!(SurfaceId, "Хэндл поверхности представления (VkSurfaceKHR).");
+
+/// Оконные дескрипторы для создания поверхности (ADR-0034).
+///
+/// RHI не зависит от оконной библиотеки: принимаются стандартные
+/// `raw-window-handle` 0.6 дескрипторы, которые отдаёт `winit` и другие
+/// оконные слои. Владелец окна обязан держать его живым, пока живёт
+/// поверхность.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct WindowSurface {
+    /// Дескриптор окна.
+    pub window: raw_window_handle::RawWindowHandle,
+    /// Дескриптор дисплея/подключения.
+    pub display: raw_window_handle::RawDisplayHandle,
+}
+
+impl WindowSurface {
+    /// Поверхность из готовых сырых дескрипторов.
+    #[must_use]
+    pub const fn new(
+        window: raw_window_handle::RawWindowHandle,
+        display: raw_window_handle::RawDisplayHandle,
+    ) -> Self {
+        Self { window, display }
+    }
+
+    /// Поверхность из провайдера `raw-window-handle` (например, `winit::Window`).
+    ///
+    /// # Errors
+    ///
+    /// [`RhiError::Surface`] — провайдер не отдал дескриптор окна/дисплея.
+    pub fn from_provider<T>(provider: &T) -> Result<Self, RhiError>
+    where
+        T: raw_window_handle::HasWindowHandle + raw_window_handle::HasDisplayHandle + ?Sized,
+    {
+        let window = provider
+            .window_handle()
+            .map_err(|error| RhiError::Surface(format!("window handle: {error}")))?
+            .into();
+        let display = provider
+            .display_handle()
+            .map_err(|error| RhiError::Surface(format!("display handle: {error}")))?
+            .into();
+        Ok(Self { window, display })
+    }
+}
+
+/// Источник поверхности представления.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SurfaceTarget {
+    /// Headless-поверхность (`VK_EXT_headless_surface`) для CI/тестов.
+    Headless,
+    /// Оконная поверхность (`VK_KHR_*_surface`).
+    Window(WindowSurface),
+}
+
+impl SurfaceTarget {
+    /// Оконная поверхность из провайдера `raw-window-handle`.
+    ///
+    /// # Errors
+    ///
+    /// [`RhiError::Surface`] — провайдер не отдал дескрипторы.
+    pub fn window<T>(provider: &T) -> Result<Self, RhiError>
+    where
+        T: raw_window_handle::HasWindowHandle + raw_window_handle::HasDisplayHandle + ?Sized,
+    {
+        Ok(Self::Window(WindowSurface::from_provider(provider)?))
+    }
+
+    /// Вид поверхности без платформенных указателей (для Null/диагностики).
+    #[must_use]
+    pub const fn kind(&self) -> SurfaceKind {
+        match self {
+            Self::Headless => SurfaceKind::Headless,
+            Self::Window(_) => SurfaceKind::Window,
+        }
+    }
+}
+
+/// Вид поверхности представления.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SurfaceKind {
+    /// Headless-поверхность (`VK_EXT_headless_surface`).
+    Headless,
+    /// Оконная поверхность.
+    Window,
+}
 
 /// Дескриптор GPU-буфера.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -642,6 +731,8 @@ pub struct SwapchainDesc {
     pub present_mode: PresentMode,
     /// Кадров в полёте.
     pub frames_in_flight: u32,
+    /// Поверхность представления; `None` — offscreen swapchain.
+    pub surface: Option<SurfaceId>,
 }
 
 impl SwapchainDesc {
@@ -655,7 +746,15 @@ impl SwapchainDesc {
             format: TextureFormat::Bgra8Srgb,
             present_mode: PresentMode::Fifo,
             frames_in_flight: 2,
+            surface: None,
         }
+    }
+
+    /// Привязывает swapchain к поверхности (окно/present-проход).
+    #[must_use]
+    pub const fn with_surface(mut self, surface: SurfaceId) -> Self {
+        self.surface = Some(surface);
+        self
     }
 
     /// Задаёт формат.

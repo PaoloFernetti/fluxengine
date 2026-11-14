@@ -24,7 +24,8 @@ pub use types::{
     DescriptorResource, DescriptorSetDesc, DescriptorSetId, DescriptorWrite, DeviceSignature,
     FilterMode, GpuBufferDesc, GpuImageDesc, ImageId, MipmapMode, PipelineDesc, PipelineId,
     PipelineKind, PresentMode, PrimitiveTopology, QueryPoolDesc, QueryPoolId, RenderPassDesc,
-    SamplerDesc, SamplerId, SwapchainDesc, SwapchainId, TextureFormat, TextureUsage,
+    SamplerDesc, SamplerId, SurfaceId, SurfaceKind, SurfaceTarget, SwapchainDesc, SwapchainId,
+    TextureFormat, TextureUsage, WindowSurface,
 };
 pub use vram::{BudgetSnapshot, Pressure, VramAllocator, VramLease};
 #[cfg(feature = "vulkan")]

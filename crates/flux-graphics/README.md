@@ -59,8 +59,13 @@ flux-graphics = { workspace = true, features = ["vulkan"] }
   `VulkanDevice::validation_errors()` — счётчик для гейта «чистый лог».
 - Память: `VkDeviceMemory` на ресурс, бюджет по device-local кучам,
   лизинги `VramAllocator` учитываются вместе с аллокациями.
-- Swapchain в I1 — offscreen (`VulkanSwapchain`); окно/`VkSurfaceKHR` и
-  настоящий `VkSwapchainKHR` — следующая итерация (вместе с present-проходом).
+- Поверхности: `SurfaceTarget::{Headless, Window}` (`raw-window-handle` 0.6,
+  win32/xlib/xcb/wayland), `create_surface`/`destroy_surface`. Headless-WSI
+  (`VK_EXT_headless_surface`) даёт реальный `VkSwapchainKHR` в CI на lavapipe.
+- Swapchain: offscreen (`VulkanSwapchain`) и present
+  (`VulkanPresentSwapchain` — acquire через fence, переход образа в
+  `PRESENT_SRC_KHR`, `queue_present`, resize с ожиданием idle). `SwapchainDesc::with_surface`
+  привязывает цепочку к поверхности.
 - `create_pipeline` (I5) собирает реальные graphics/compute PSO из SPIR-V:
   shader modules, `PipelineLayout` без дескрипторов, vertex input
   `R32G32B32_SFLOAT` (stride 12), dynamic viewport/scissor, blend disable.
@@ -97,6 +102,7 @@ flux-graphics = { workspace = true, features = ["vulkan"] }
 cargo test -p flux-graphics
 cargo test -p flux-graphics --features vulkan
 cargo test -p flux-graphics --features vulkan --test vulkan_pso
+cargo test -p flux-graphics --features vulkan --test vulkan_surface
 cargo test -p flux-graphics --test golden_gate
 cargo clippy -p flux-graphics --features vulkan --all-targets -- -D warnings
 ```

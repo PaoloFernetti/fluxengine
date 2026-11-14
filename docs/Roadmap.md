@@ -556,13 +556,20 @@ deadzone не теряет диапазон (rescale); rebinding roundtrip че�
       `PipelineCacheFile` — заголовок `FLUXPSO1` с подписью устройства,
       атомарная запись и инвалидация при смене GPU/API/формата; PSO-смоук
       перезапускает устройство и загружает блоб с диска
-- [ ] Окно/`VkSurfaceKHR` + `VkSwapchainKHR` (present-проход — I4)
+- [x] Окно/`VkSurfaceKHR` + `VkSwapchainKHR` (present — I3/I4):
+      `SurfaceTarget::{Headless, Window}` на `raw-window-handle` 0.6,
+      `create_surface`/`destroy_surface`, `SwapchainDesc::with_surface`,
+      `VulkanPresentSwapchain` (acquire через fence, переход в
+      `PRESENT_SRC_KHR`, `queue_present`, resize с ожиданием idle);
+      headless-WSI позволяет проверять настоящую цепочку на lavapipe в CI
 
 **Приёмка**: clear-color headless-кадр; validation без ошибок; leak-трекинг
 «выделено N — освобождено N»; кэш PSO переживает перезапуск устройства
 (непустой блоб читается и принимается драйвером), чужой кэш отвергается по
-подписи. Оконный кадр — критерий I3 (surface требует оконного handle,
-ADR-0034).
+подписи; surface-смоук за 10 resize-ов не накапливает образы, validation
+остаётся чистой. Оконный кадр на реальном окне — после интеграции
+`winit`-цикла (3.1), контракт поверхности уже готов (ADR-0034, уточнение
+индекса).
 
 ### 4.3 Transfer и ресурсы
 

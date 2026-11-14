@@ -17,8 +17,8 @@ use super::{
         BackendKind, BindingKind, BufferId, BufferUsage, Capabilities, DescriptorBinding,
         DescriptorResource, DescriptorSetDesc, DescriptorSetId, DescriptorWrite, DeviceSignature,
         GpuBufferDesc, GpuImageDesc, ImageId, PipelineDesc, PipelineId, PresentMode, QueryPoolDesc,
-        QueryPoolId, RenderPassDesc, SamplerDesc, SamplerId, SwapchainDesc, SwapchainId,
-        TextureFormat,
+        QueryPoolId, RenderPassDesc, SamplerDesc, SamplerId, SurfaceId, SurfaceKind, SurfaceTarget,
+        SwapchainDesc, SwapchainId, TextureFormat,
     },
     vram::{BudgetSnapshot, Pressure, VramAllocator, VramLease},
 };
@@ -191,6 +191,7 @@ pub struct NullDevice {
     next_sampler: u64,
     next_pipeline: u64,
     next_swapchain: u64,
+    next_surface: u64,
     next_query_pool: u64,
     next_descriptor_set: u64,
     buffers: BTreeMap<u64, GpuBufferDesc>,
@@ -199,6 +200,8 @@ pub struct NullDevice {
     pipelines: BTreeMap<u64, PipelineDesc>,
     /// Эмуляция блоба `VkPipelineCache`: Null хранит его без разбора.
     pipeline_cache: Vec<u8>,
+    /// Поверхности: вид без платформенных указателей (Null их не использует).
+    surfaces: BTreeMap<u64, SurfaceKind>,
     query_pools: BTreeMap<u64, u32>,
     descriptor_sets: BTreeMap<u64, NullDescriptorSet>,
     memory: SharedMemory,
@@ -224,6 +227,7 @@ impl NullDevice {
             next_sampler: 0,
             next_pipeline: 0,
             next_swapchain: 0,
+            next_surface: 0,
             next_query_pool: 0,
             next_descriptor_set: 0,
             buffers: BTreeMap::new(),
@@ -231,6 +235,7 @@ impl NullDevice {
             samplers: BTreeMap::new(),
             pipelines: BTreeMap::new(),
             pipeline_cache: Vec::new(),
+            surfaces: BTreeMap::new(),
             query_pools: BTreeMap::new(),
             descriptor_sets: BTreeMap::new(),
             memory: SharedMemory::default(),
@@ -283,6 +288,18 @@ impl NullDevice {
     #[must_use]
     pub fn descriptor_set_count(&self) -> usize {
         self.descriptor_sets.len()
+    }
+
+    /// Число живых поверхностей.
+    #[must_use]
+    pub fn surface_count(&self) -> usize {
+        self.surfaces.len()
+    }
+
+    /// Вид созданной поверхности.
+    #[must_use]
+    pub fn surface_kind(&self, id: SurfaceId) -> Option<SurfaceKind> {
+        self.surfaces.get(&id.0).copied()
     }
 
     /// Записанный дескриптор набора.
@@ -347,6 +364,17 @@ impl RhiDevice for NullDevice {
         self.pipeline_cache.clear();
         self.pipeline_cache.extend_from_slice(data);
         Ok(())
+    }
+
+    fn create_surface(&mut self, target: &SurfaceTarget) -> Result<SurfaceId, RhiError> {
+        let id = SurfaceId(self.next_surface);
+        self.next_surface = self.next_surface.wrapping_add(1);
+        self.surfaces.insert(id.0, target.kind());
+        Ok(id)
+    }
+
+    fn destroy_surface(&mut self, id: SurfaceId) -> bool {
+        self.surfaces.remove(&id.0).is_some()
     }
 
     fn create_buffer(&mut self, desc: &GpuBufferDesc) -> Result<BufferId, RhiError> {
@@ -620,6 +648,14 @@ impl RhiDevice for NullDevice {
         if desc.width == 0 || desc.height == 0 {
             return Err(RhiError::validation("swapchain size must be non-zero"));
         }
+        if let Some(surface) = desc.surface {
+            if !self.surfaces.contains_key(&surface.0) {
+                return Err(RhiError::InvalidHandle {
+                    kind: "surface",
+                    id: surface.0,
+                });
+            }
+        }
         if !self.caps.supports_color_format(desc.format) {
             return Err(RhiError::validation("unsupported swapchain format"));
         }
@@ -681,6 +717,10 @@ impl Swapchain for NullSwapchain {
 
     fn size(&self) -> (u32, u32) {
         (self.width, self.height)
+    }
+
+    fn image_count(&self) -> usize {
+        self.frames_in_flight as usize
     }
 
     fn resize(&mut self, width: u32, height: u32) -> Result<(), RhiError> {
@@ -1505,6 +1545,35 @@ mod tests {
             device.read_buffer(hdr_readback).unwrap(),
             vec![0x00, 0x3C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3C]
         );
+    }
+
+    #[test]
+    fn surfaces_and_present_swapchain_are_tracked() {
+        let mut device = NullDevice::new();
+        let surface = device.create_surface(&SurfaceTarget::Headless).unwrap();
+        assert_eq!(device.surface_count(), 1);
+        assert_eq!(device.surface_kind(surface), Some(SurfaceKind::Headless));
+
+        let desc = SwapchainDesc::new("window", 320, 200).with_surface(surface);
+        let mut swapchain = device.create_swapchain(&desc).unwrap();
+        assert_eq!(swapchain.image_count(), 2);
+        assert_eq!(swapchain.size(), (320, 200));
+        let index = swapchain.acquire().unwrap();
+        swapchain.present(index).unwrap();
+        assert_eq!(swapchain.image_count(), 2);
+
+        assert!(device.destroy_surface(surface));
+        assert_eq!(device.surface_count(), 0);
+        assert!(!device.destroy_surface(surface));
+
+        let unknown = SwapchainDesc::new("unknown", 8, 8).with_surface(SurfaceId(99));
+        assert!(matches!(
+            device.create_swapchain(&unknown),
+            Err(RhiError::InvalidHandle {
+                kind: "surface",
+                ..
+            })
+        ));
     }
 
     #[test]

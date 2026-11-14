@@ -16,6 +16,7 @@ mod memory;
 mod swapchain;
 
 use std::collections::BTreeMap;
+use std::ffi::CStr;
 use std::sync::Arc;
 
 use ash::vk;
@@ -31,14 +32,14 @@ use super::types::{
     DescriptorResource, DescriptorSetDesc, DescriptorSetId, DescriptorWrite, DeviceSignature,
     GpuBufferDesc, GpuImageDesc, ImageId, PipelineDesc, PipelineId, PipelineKind, PresentMode,
     PrimitiveTopology, QueryPoolDesc, QueryPoolId, RenderPassDesc, SamplerDesc, SamplerId,
-    SwapchainDesc, TextureFormat,
+    SurfaceId, SurfaceTarget, SwapchainDesc, TextureFormat, WindowSurface,
 };
 use super::vram::{BudgetSnapshot, VramAllocator, VramLease};
 use memory::{Allocation, MemoryState};
 
 pub use command::VulkanCommandBuffer;
 pub use debug::error_count as validation_error_count;
-pub use swapchain::VulkanSwapchain;
+pub use swapchain::{VulkanPresentSwapchain, VulkanSwapchain};
 
 /// Контекст устройства, разделяемый командными буферами и swapchain.
 pub(crate) struct DeviceContext {
@@ -47,12 +48,10 @@ pub(crate) struct DeviceContext {
     pub(crate) entry: ash::Entry,
     pub(crate) instance: ash::Instance,
     /// Физическое устройство, выбранное при создании.
-    #[allow(dead_code)]
     pub(crate) physical: vk::PhysicalDevice,
     pub(crate) device: ash::Device,
     pub(crate) queue: vk::Queue,
     /// Семейство graphics-очереди.
-    #[allow(dead_code)]
     pub(crate) queue_family: u32,
     pub(crate) command_pool: vk::CommandPool,
     pub(crate) caps: Capabilities,
@@ -60,6 +59,21 @@ pub(crate) struct DeviceContext {
     pub(crate) store: Mutex<ResourceStore>,
     /// Кэш PSO (ADR-0034): общий для всех pipeline устройства.
     pub(crate) pipeline_cache: Mutex<Option<vk::PipelineCache>>,
+    /// `VK_KHR_surface`: destroy_surface и запросы возможностей.
+    pub(crate) surface_loader: ash::khr::surface::Instance,
+    pub(crate) headless_surface: Option<ash::ext::headless_surface::Instance>,
+    #[cfg(target_os = "windows")]
+    pub(crate) win32_surface: Option<ash::khr::win32_surface::Instance>,
+    #[cfg(all(unix, not(target_os = "macos")))]
+    pub(crate) xlib_surface: Option<ash::khr::xlib_surface::Instance>,
+    #[cfg(all(unix, not(target_os = "macos")))]
+    pub(crate) wayland_surface: Option<ash::khr::wayland_surface::Instance>,
+    #[cfg(all(unix, not(target_os = "macos")))]
+    pub(crate) xcb_surface: Option<ash::khr::xcb_surface::Instance>,
+    /// `VK_KHR_swapchain`; `None` — устройство не умеет present.
+    pub(crate) swapchain_loader: Option<ash::khr::swapchain::Device>,
+    /// Доступно ли `VK_KHR_surface`.
+    pub(crate) surface_supported: bool,
     api_version: u32,
     device_name: String,
 }
@@ -129,6 +143,11 @@ impl DeviceContext {
         for (_, render_pass) in std::mem::take(&mut store.render_passes) {
             // SAFETY: render pass is owned by the store and destroyed exactly once.
             unsafe { device.destroy_render_pass(render_pass, None) };
+        }
+        for (_, surface) in std::mem::take(&mut store.surfaces) {
+            // SAFETY: surface is owned by the store and destroyed exactly once;
+            // swapchains that used it were dropped before the context (Arc).
+            unsafe { self.surface_loader.destroy_surface(surface, None) };
         }
     }
 }
@@ -238,6 +257,8 @@ pub(crate) struct ResourceStore {
     descriptor_pool: Option<vk::DescriptorPool>,
     render_passes: BTreeMap<RenderPassKey, vk::RenderPass>,
     framebuffers: BTreeMap<FramebufferKey, vk::Framebuffer>,
+    /// Поверхности представления (`VkSurfaceKHR`).
+    surfaces: BTreeMap<u64, vk::SurfaceKHR>,
     pub(crate) memory: MemoryState,
     next_id: u64,
 }
@@ -255,6 +276,7 @@ impl ResourceStore {
             descriptor_pool: None,
             render_passes: BTreeMap::new(),
             framebuffers: BTreeMap::new(),
+            surfaces: BTreeMap::new(),
             memory,
             next_id: 0,
         }
@@ -773,9 +795,20 @@ impl VulkanDevice {
         let instance_version = unsafe { entry.try_enumerate_instance_version() }
             .map_err(convert::map_vk)?
             .unwrap_or(vk::API_VERSION_1_0);
-        let (instance, debug_enabled) =
-            create_instance(&entry, instance_version, cfg!(debug_assertions))?;
-        match create_context(entry, instance, instance_version, debug_enabled) {
+        let surface_extensions = SurfaceExtensions::detect(&entry)?;
+        let (instance, debug_enabled) = create_instance(
+            &entry,
+            instance_version,
+            cfg!(debug_assertions),
+            &surface_extensions,
+        )?;
+        match create_context(
+            entry,
+            instance,
+            instance_version,
+            debug_enabled,
+            surface_extensions,
+        ) {
             Ok(context) => Ok(Self {
                 context: Arc::new(context),
             }),
@@ -1509,8 +1542,46 @@ impl RhiDevice for VulkanDevice {
         Ok(Box::new(VulkanCommandBuffer::new(self.context.clone())?))
     }
 
+    fn create_surface(&mut self, target: &SurfaceTarget) -> Result<SurfaceId, RhiError> {
+        if !self.context.surface_supported {
+            return Err(RhiError::Unsupported {
+                feature: "VK_KHR_surface",
+            });
+        }
+        let surface = create_surface_handle(&self.context, target)?;
+        let id = self.context.store.lock().next_id();
+        self.context.store.lock().surfaces.insert(id, surface);
+        Ok(SurfaceId(id))
+    }
+
+    fn destroy_surface(&mut self, id: SurfaceId) -> bool {
+        let surface = self.context.store.lock().surfaces.remove(&id.0);
+        match surface {
+            Some(surface) => {
+                // SAFETY: surface is owned by the store and removed above.
+                unsafe { self.context.surface_loader.destroy_surface(surface, None) };
+                true
+            }
+            None => false,
+        }
+    }
+
     fn create_swapchain(&mut self, desc: &SwapchainDesc) -> Result<Box<dyn Swapchain>, RhiError> {
-        Ok(Box::new(VulkanSwapchain::new(self.context.clone(), desc)?))
+        let Some(surface_id) = desc.surface else {
+            return Ok(Box::new(VulkanSwapchain::new(self.context.clone(), desc)?));
+        };
+        let surface = *self
+            .context
+            .store
+            .lock()
+            .surfaces
+            .get(&surface_id.0)
+            .ok_or(RhiError::InvalidHandle {
+                kind: "surface",
+                id: surface_id.0,
+            })?;
+        let swapchain = VulkanPresentSwapchain::new(self.context.clone(), surface, desc)?;
+        Ok(Box::new(swapchain))
     }
 
     fn wait_idle(&mut self) -> Result<(), RhiError> {
@@ -1542,12 +1613,81 @@ struct BuiltDevice {
     caps: Capabilities,
     memory: MemoryState,
     device_name: String,
+    swapchain_supported: bool,
+}
+
+/// Доступные instance-расширения поверхности.
+struct SurfaceExtensions {
+    surface: bool,
+    headless: bool,
+    #[cfg(target_os = "windows")]
+    win32: bool,
+    #[cfg(all(unix, not(target_os = "macos")))]
+    xlib: bool,
+    #[cfg(all(unix, not(target_os = "macos")))]
+    wayland: bool,
+    #[cfg(all(unix, not(target_os = "macos")))]
+    xcb: bool,
+}
+
+impl SurfaceExtensions {
+    fn detect(entry: &ash::Entry) -> Result<Self, RhiError> {
+        // SAFETY: entry is valid; the query has no other preconditions.
+        let available = unsafe { entry.enumerate_instance_extension_properties(None) }
+            .map_err(convert::map_vk)?;
+        let has = |name: &CStr| {
+            available
+                .iter()
+                .any(|extension| extension.extension_name_as_c_str() == Ok(name))
+        };
+        Ok(Self {
+            surface: has(ash::khr::surface::NAME),
+            headless: has(ash::ext::headless_surface::NAME),
+            #[cfg(target_os = "windows")]
+            win32: has(ash::khr::win32_surface::NAME),
+            #[cfg(all(unix, not(target_os = "macos")))]
+            xlib: has(ash::khr::xlib_surface::NAME),
+            #[cfg(all(unix, not(target_os = "macos")))]
+            wayland: has(ash::khr::wayland_surface::NAME),
+            #[cfg(all(unix, not(target_os = "macos")))]
+            xcb: has(ash::khr::xcb_surface::NAME),
+        })
+    }
+
+    /// Имена расширений, которые нужно включить в instance.
+    fn enabled(&self) -> Vec<&'static CStr> {
+        let mut names = Vec::new();
+        if self.surface {
+            names.push(ash::khr::surface::NAME);
+        }
+        if self.headless {
+            names.push(ash::ext::headless_surface::NAME);
+        }
+        #[cfg(target_os = "windows")]
+        if self.win32 {
+            names.push(ash::khr::win32_surface::NAME);
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            if self.xlib {
+                names.push(ash::khr::xlib_surface::NAME);
+            }
+            if self.wayland {
+                names.push(ash::khr::wayland_surface::NAME);
+            }
+            if self.xcb {
+                names.push(ash::khr::xcb_surface::NAME);
+            }
+        }
+        names
+    }
 }
 
 fn create_instance(
     entry: &ash::Entry,
     instance_version: u32,
     debug_requested: bool,
+    surface: &SurfaceExtensions,
 ) -> Result<(ash::Instance, bool), RhiError> {
     let app_info = vk::ApplicationInfo::default()
         .application_name(c"FluxEngine")
@@ -1559,8 +1699,10 @@ fn create_instance(
         } else {
             vk::API_VERSION_1_0
         });
+    let mut extensions: Vec<*const std::ffi::c_char> =
+        surface.enabled().iter().map(|name| name.as_ptr()).collect();
     if debug_requested {
-        let extensions = [ash::ext::debug_utils::NAME.as_ptr()];
+        extensions.push(ash::ext::debug_utils::NAME.as_ptr());
         let layers = [c"VK_LAYER_KHRONOS_validation".as_ptr()];
         let info = vk::InstanceCreateInfo::default()
             .application_info(&app_info)
@@ -1570,8 +1712,11 @@ fn create_instance(
         if let Ok(instance) = unsafe { entry.create_instance(&info, None) } {
             return Ok((instance, true));
         }
+        extensions.pop();
     }
-    let info = vk::InstanceCreateInfo::default().application_info(&app_info);
+    let info = vk::InstanceCreateInfo::default()
+        .application_info(&app_info)
+        .enabled_extension_names(&extensions);
     // SAFETY: create info is valid.
     let instance = unsafe { entry.create_instance(&info, None) }.map_err(convert::map_vk)?;
     Ok((instance, false))
@@ -1582,6 +1727,7 @@ fn create_context(
     instance: ash::Instance,
     api_version: u32,
     debug_enabled: bool,
+    surface: SurfaceExtensions,
 ) -> Result<DeviceContext, RhiError> {
     let built = match build_device(&instance, api_version) {
         Ok(built) => built,
@@ -1610,6 +1756,29 @@ fn create_context(
     } else {
         None
     };
+    let surface_loader = ash::khr::surface::Instance::new(&entry, &instance);
+    let headless_surface = surface
+        .headless
+        .then(|| ash::ext::headless_surface::Instance::new(&entry, &instance));
+    #[cfg(target_os = "windows")]
+    let win32_surface = surface
+        .win32
+        .then(|| ash::khr::win32_surface::Instance::new(&entry, &instance));
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let xlib_surface = surface
+        .xlib
+        .then(|| ash::khr::xlib_surface::Instance::new(&entry, &instance));
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let wayland_surface = surface
+        .wayland
+        .then(|| ash::khr::wayland_surface::Instance::new(&entry, &instance));
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let xcb_surface = surface
+        .xcb
+        .then(|| ash::khr::xcb_surface::Instance::new(&entry, &instance));
+    let swapchain_loader = built
+        .swapchain_supported
+        .then(|| ash::khr::swapchain::Device::new(&instance, &built.device));
     Ok(DeviceContext {
         entry,
         instance,
@@ -1622,8 +1791,143 @@ fn create_context(
         validation,
         store: Mutex::new(ResourceStore::new(built.memory)),
         pipeline_cache: Mutex::new(Some(pipeline_cache)),
+        surface_loader,
+        headless_surface,
+        #[cfg(target_os = "windows")]
+        win32_surface,
+        #[cfg(all(unix, not(target_os = "macos")))]
+        xlib_surface,
+        #[cfg(all(unix, not(target_os = "macos")))]
+        wayland_surface,
+        #[cfg(all(unix, not(target_os = "macos")))]
+        xcb_surface,
+        swapchain_loader,
+        surface_supported: surface.surface,
         api_version,
         device_name: built.device_name,
+    })
+}
+
+/// Создаёт `VkSurfaceKHR` из headless- или оконного таргета.
+fn create_surface_handle(
+    context: &DeviceContext,
+    target: &SurfaceTarget,
+) -> Result<vk::SurfaceKHR, RhiError> {
+    match target {
+        SurfaceTarget::Headless => {
+            let loader = context
+                .headless_surface
+                .as_ref()
+                .ok_or(RhiError::Unsupported {
+                    feature: "VK_EXT_headless_surface",
+                })?;
+            let info = vk::HeadlessSurfaceCreateInfoEXT::default();
+            // SAFETY: instance owns the loader; create info is default/valid.
+            unsafe { loader.create_headless_surface(&info, None) }.map_err(convert::map_vk)
+        }
+        SurfaceTarget::Window(window) => create_window_surface(context, window),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn create_window_surface(
+    context: &DeviceContext,
+    window: &WindowSurface,
+) -> Result<vk::SurfaceKHR, RhiError> {
+    use raw_window_handle::RawWindowHandle;
+    if let RawWindowHandle::Win32(handle) = window.window {
+        let loader = context
+            .win32_surface
+            .as_ref()
+            .ok_or(RhiError::Unsupported {
+                feature: "VK_KHR_win32_surface",
+            })?;
+        let info = vk::Win32SurfaceCreateInfoKHR::default()
+            .hinstance(handle.hinstance.map(|value| value.get()).unwrap_or(0))
+            .hwnd(handle.hwnd.get());
+        // SAFETY: handles come from the window owner and outlive the surface.
+        return unsafe { loader.create_win32_surface(&info, None) }.map_err(convert::map_vk);
+    }
+    Err(RhiError::Unsupported {
+        feature: "window surface (unsupported handle)",
+    })
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn create_window_surface(
+    context: &DeviceContext,
+    window: &WindowSurface,
+) -> Result<vk::SurfaceKHR, RhiError> {
+    use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
+    match window.window {
+        RawWindowHandle::Xlib(handle) => {
+            let display = match window.display {
+                RawDisplayHandle::Xlib(display) => display
+                    .display
+                    .map_or(std::ptr::null_mut(), |value| value.as_ptr().cast()),
+                _ => std::ptr::null_mut(),
+            };
+            if display.is_null() {
+                return Err(RhiError::Surface("xlib display handle is missing".into()));
+            }
+            let loader = context.xlib_surface.as_ref().ok_or(RhiError::Unsupported {
+                feature: "VK_KHR_xlib_surface",
+            })?;
+            let info = vk::XlibSurfaceCreateInfoKHR::default()
+                .dpy(display)
+                .window(handle.window);
+            // SAFETY: handles come from the window owner and outlive the surface.
+            unsafe { loader.create_xlib_surface(&info, None) }.map_err(convert::map_vk)
+        }
+        RawWindowHandle::Xcb(handle) => {
+            let connection = match window.display {
+                RawDisplayHandle::Xcb(display) => display
+                    .connection
+                    .map_or(std::ptr::null_mut(), |value| value.as_ptr().cast()),
+                _ => std::ptr::null_mut(),
+            };
+            if connection.is_null() {
+                return Err(RhiError::Surface("xcb connection is missing".into()));
+            }
+            let loader = context.xcb_surface.as_ref().ok_or(RhiError::Unsupported {
+                feature: "VK_KHR_xcb_surface",
+            })?;
+            let info = vk::XcbSurfaceCreateInfoKHR::default()
+                .connection(connection)
+                .window(handle.window.get());
+            // SAFETY: handles come from the window owner and outlive the surface.
+            unsafe { loader.create_xcb_surface(&info, None) }.map_err(convert::map_vk)
+        }
+        RawWindowHandle::Wayland(handle) => {
+            let display = match window.display {
+                RawDisplayHandle::Wayland(display) => display.display.as_ptr().cast(),
+                _ => return Err(RhiError::Surface("wayland display is missing".into())),
+            };
+            let loader = context
+                .wayland_surface
+                .as_ref()
+                .ok_or(RhiError::Unsupported {
+                    feature: "VK_KHR_wayland_surface",
+                })?;
+            let info = vk::WaylandSurfaceCreateInfoKHR::default()
+                .display(display)
+                .surface(handle.surface.as_ptr().cast());
+            // SAFETY: handles come from the window owner and outlive the surface.
+            unsafe { loader.create_wayland_surface(&info, None) }.map_err(convert::map_vk)
+        }
+        _ => Err(RhiError::Unsupported {
+            feature: "window surface (unsupported handle)",
+        }),
+    }
+}
+
+#[cfg(not(any(target_os = "windows", all(unix, not(target_os = "macos")))))]
+fn create_window_surface(
+    _context: &DeviceContext,
+    _window: &WindowSurface,
+) -> Result<vk::SurfaceKHR, RhiError> {
+    Err(RhiError::Unsupported {
+        feature: "window surface on this platform",
     })
 }
 
@@ -1658,6 +1962,12 @@ fn build_device(instance: &ash::Instance, api_version: u32) -> Result<BuiltDevic
         .device_name_as_c_str()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|_| "unknown".to_owned());
+    // SAFETY: physical device belongs to the instance.
+    let device_extensions = unsafe { instance.enumerate_device_extension_properties(physical) }
+        .map_err(convert::map_vk)?;
+    let swapchain_supported = device_extensions
+        .iter()
+        .any(|extension| extension.extension_name_as_c_str() == Ok(ash::khr::swapchain::NAME));
 
     let mut timeline = vk::PhysicalDeviceTimelineSemaphoreFeatures::default();
     let mut indexing = vk::PhysicalDeviceDescriptorIndexingFeatures::default();
@@ -1689,7 +1999,13 @@ fn build_device(instance: &ash::Instance, api_version: u32) -> Result<BuiltDevic
     let queue_infos = [queue_info];
     let mut timeline_enable = vk::PhysicalDeviceTimelineSemaphoreFeatures::default()
         .timeline_semaphore(timeline_supported);
-    let mut create_info = vk::DeviceCreateInfo::default().queue_create_infos(&queue_infos);
+    let mut device_extension_names: Vec<*const std::ffi::c_char> = Vec::new();
+    if swapchain_supported {
+        device_extension_names.push(ash::khr::swapchain::NAME.as_ptr());
+    }
+    let mut create_info = vk::DeviceCreateInfo::default()
+        .queue_create_infos(&queue_infos)
+        .enabled_extension_names(&device_extension_names);
     if timeline_supported {
         create_info = create_info.push_next(&mut timeline_enable);
     }
@@ -1719,6 +2035,7 @@ fn build_device(instance: &ash::Instance, api_version: u32) -> Result<BuiltDevic
         caps,
         memory: MemoryState::new(memory_properties),
         device_name,
+        swapchain_supported,
     })
 }
 

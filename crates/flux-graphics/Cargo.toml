@@ -22,6 +22,8 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 parking_lot.workspace = true
+# Оконные handle для VkSurfaceKHR: типы платформенных дескрипторов (ADR-0034).
+raw-window-handle = "0.6"
 # ADR-0034: Vulkan bindings, runtime-загрузка (feature `vulkan`).
 ash = { workspace = true, optional = true }
 
