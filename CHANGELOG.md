@@ -4,6 +4,14 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] - 2026-11-14
+
+### Features
+
+#### graphics
+
+- дисковый кэш PSO с инвалидацией по устройству ([1f496fe](https://github.com/PaoloFernetti/fluxengine/commit/1f496fe91cefbae5e3e38798a1e6ed5c6a00e644))
+
 ## [0.4.1] - 2026-11-14
 
 ### Fixes
