@@ -9,7 +9,10 @@ on:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Отменяем только устаревшие PR-прогоны. Push в dev отменять нельзя: release-job
+  # пушит release-коммит и тег в тот же ref и сам себя «убивает» вместе с
+  # последующими шагами (GitHub Release, merge в master).
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -156,16 +159,37 @@ jobs:
       - name: version, tag, push dev and GitHub Release (idempotent)
         run: cargo run -p flux-release -- release --ci --push --github-release
 
-      - name: merge dev into master and push
+  sync-master:
+    name: fast-forward master from dev
+    needs: [rust, licenses, docs, release]
+    # Выполняется и для release-коммитов (job release там пропускается), чтобы
+    # master получал уже выпущенную версию. Красный CI в master не мержим.
+    if: |
+      always() && !cancelled() &&
+      github.ref == 'refs/heads/dev' &&
+      needs.rust.result == 'success' &&
+      needs.licenses.result == 'success' &&
+      needs.docs.result == 'success' &&
+      (needs.release.result == 'success' || needs.release.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: merge dev into master (ff-only) and push
         run: |
-          git fetch origin master
+          git fetch origin dev master --tags
           git checkout -B master origin/master
-          git merge --ff-only dev
+          git merge --ff-only origin/dev
           git push origin master
 
   report-failure:
     name: issue on dev failure
-    needs: [rust, licenses, docs, release]
+    needs: [rust, licenses, docs, release, sync-master]
     if: failure() && github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
     permissions:

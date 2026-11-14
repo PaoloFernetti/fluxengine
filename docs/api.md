@@ -9427,6 +9427,12 @@ use flux_release::{
 Флаги `release`: `--no-verify`, `--no-git-checks`, `--package`, `--publish`,
 `--push`, `--github-release`, `--semver-checks`, `--ci`.
 
+`--github-release` идемпотентен: перед созданием проверяется существование
+релиза (`gh release view` или `GET /repos/{slug}/releases/tags/{tag}`). Если
+версия уже выпущена (тег есть), повторный прогон не меняет версию и changelog,
+но создаёт отсутствующий GitHub Release — это восстанавливает релиз, прерванный
+после пуша тега.
+
 ```bash
 cargo run -p flux-release -- release --dry-run
 cargo run -p flux-release -- release --prerelease beta

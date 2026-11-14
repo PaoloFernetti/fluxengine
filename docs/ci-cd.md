@@ -178,14 +178,24 @@ gh api repos/PaoloFernetti/fluxengine/branches/master/protection
 - Команда: `cargo run -p flux-release -- release --ci --push
   --github-release`; `--publish` включается отдельно, чтобы обычный релиз не
   публиковал крейты.
-- После релиза job делает `git checkout -B master origin/master`,
-  `git merge --ff-only dev`, `git push origin master` — автоматический merge
-  только fast-forward; расхождение веток = ошибка job-а и Issue.
+- Синхронизация `master` — отдельный job `sync-master` (не шаг `release`):
+  `git checkout -B master origin/master`, `git merge --ff-only dev`,
+  `git push origin master`. Он зависит от `release` и запускается при
+  `always() && !cancelled()`, поэтому выполняется и на release-коммите, где
+  сам `release` пропущен условием. Merge только fast-forward; расхождение
+  веток = ошибка job-а и Issue.
 - Коммит `chore(release): vX.Y.Z` исключается из повторного релиза условием
-  job-а. При push от PAT workflow может запуститься снова, но job `release`
-  пропускается по сообщению коммита; при `GITHUB_TOKEN` повторного запуска нет.
-- Идемпотентность: повторный запуск при существующем теге — no-op, поэтому
-  ретрай workflow безопасен.
+  job-а `release`. При push от PAT workflow запускается снова: job `release`
+  пропускается по сообщению коммита, а `sync-master` доводит `master` до
+  release-коммита.
+- Отмена прогонов: `concurrency.cancel-in-progress` включён только для
+  `pull_request`. Push в `dev` не отменяет собственный прогон — иначе
+  release-job убивает себя после пуша тега и не успевает создать GitHub
+  Release и обновить `master`.
+- Идемпотентность: повторный запуск при существующем теге не двигает версию,
+  но `--github-release` дозаполняет отсутствующий GitHub Release (проверка
+  `gh release view` / `GET /releases/tags/<tag>` перед созданием), поэтому
+  ретрай workflow безопасен и восстанавливает недоделанный релиз.
 - PR-гейт (`release-check`) вызывает только `check --strict` и ничего не
   пишет; релиз с PR не запускается.
 - `master` должна разрешать push от `github-actions[bot]`

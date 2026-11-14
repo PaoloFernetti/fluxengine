@@ -73,7 +73,9 @@ cargo run -p flux-release -- init --locale ru
   (`bump_major_on_breaking_below_1_0 = true` включает major).
 - `chore(release)`, merge-коммиты и заголовки с `[skip release]` исключаются.
 - Pre-release: `1.2.0-alpha.1` → `alpha.2` при повторе, смена канала → `.1`.
-- Идемпотентность: если тег уже существует, `release` завершается no-op.
+- Идемпотентность: если тег уже существует, `release` не двигает версию и
+  changelog; `--github-release` при этом дозаполняет отсутствующий релиз
+  (перед созданием проверяется `gh release view` / `GET /releases/tags/<tag>`).
 
 ## Конфиг `.releaserc.toml`
 
@@ -127,8 +129,11 @@ locale = "en"           # или "ru"
 - PR: `check --commits "origin/<base>..HEAD" --strict` — сообщения вне
   Conventional Commits красят PR.
 - Push в `dev` или `workflow_dispatch`: после зелёных test/build job запускает
-  `release --ci --push --github-release`, затем fast-forward-мерж `dev` →
-  `master`; коммит `chore(release): vX.Y.Z` исключён из повторного запуска.
+  `release --ci --push --github-release`; отдельный job `sync-master` делает
+  fast-forward-мерж `dev` → `master` и выполняется в том числе на release-коммите
+  (`chore(release): vX.Y.Z` исключён только из версионирования).
+- Отмена прогонов (`cancel-in-progress`) включена только для PR: иначе push
+  тега из release-job отменяет собственный прогон.
 - Красный test/build/release на `dev` создаёт Issue (или комментарий к
   существующему Issue того же коммита).
 - Push в защищённый `master` идёт через `RELEASE_TOKEN` (PAT администратора)

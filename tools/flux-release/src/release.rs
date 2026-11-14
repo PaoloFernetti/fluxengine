@@ -447,8 +447,12 @@ fn publish(manifests: &[PathBuf], dry_run: bool) -> Result<()> {
     Ok(())
 }
 
+/// Создаёт GitHub Release для тега; повторный вызов для существующего релиза — no-op.
 fn github_release(tag: &str, notes: &str, root: &Path) -> Result<()> {
     if command_available("gh", &["--version"]) {
+        if command_available("gh", &["release", "view", tag]) {
+            return Ok(());
+        }
         return run_command(
             Command::new("gh").args(["release", "create", tag, "--title", tag, "--notes", notes]),
             "gh release create",
@@ -462,6 +466,9 @@ fn github_release(tag: &str, notes: &str, root: &Path) -> Result<()> {
     let slug = Git::new(root).repo_slug()?.ok_or_else(|| {
         ReleaseError::Command("cannot derive a GitHub repository from origin".into())
     })?;
+    if github_release_exists(&slug, tag, &token) {
+        return Ok(());
+    }
     let body = serde_json::json!({
         "tag_name": tag,
         "name": tag,
@@ -493,6 +500,26 @@ fn github_release(tag: &str, notes: &str, root: &Path) -> Result<()> {
     result
 }
 
+/// Проверяет существование релиза по тегу через GitHub API (curl).
+fn github_release_exists(slug: &str, tag: &str, token: &str) -> bool {
+    let probe =
+        std::env::temp_dir().join(format!("flux-release-probe-{}.json", tag.replace('/', "-")));
+    let found = Command::new("curl")
+        .args(["-sS", "-f", "-o"])
+        .arg(&probe)
+        .args(["-H", "Accept: application/vnd.github+json"])
+        .arg("-H")
+        .arg(format!("Authorization: Bearer {token}"))
+        .arg(format!(
+            "https://api.github.com/repos/{slug}/releases/tags/{tag}"
+        ))
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false);
+    let _ = std::fs::remove_file(&probe);
+    found
+}
+
 /// Применяет релиз: версия, changelog, commit, tag, opt-in publish/push/release.
 ///
 /// # Errors
@@ -517,11 +544,25 @@ pub fn apply(options: &Options) -> Result<Outcome> {
         });
     };
     if context.already_released {
+        let tag = context
+            .tag
+            .clone()
+            .unwrap_or_else(|| context.config.tag_for(&next));
+        // Версия уже выпущена, но GitHub Release мог не создаться (например, job
+        // отменили после пуша тега). Повторный прогон дозаполняет релиз.
+        if options.github_release && !options.dry_run {
+            let date = context
+                .git
+                .head_date()
+                .unwrap_or_else(|_| "1970-01-01".to_string());
+            let entry = changelog_entry(&context, &next, &date)?;
+            github_release(&tag, &entry, &options.root)?;
+        }
         return Ok(Outcome {
             previous: context.current.to_string(),
             next: Some(next.to_string()),
             bump: context.plan.bump,
-            tag: context.tag.clone(),
+            tag: Some(tag),
             commits: context.commits.len(),
             changelog_written: false,
             committed: false,
