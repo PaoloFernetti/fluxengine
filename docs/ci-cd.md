@@ -22,9 +22,12 @@
 7. Линтер зависимостей: lib-крейты не тянут winit/ash/gilrs (headless-правило)
 8. Линтер лицензий зависимостей (cargo-deny, allowlist — см. legal.md)
 9. ADR-чек: изменение контрактов/форматов/канона без ADR — красный
-10. Job `vulkan-lavapipe` (ubuntu, Mesa lavapipe): RHI-юниты, PSO-смоук и
-    surface/swapchain-смоук с `FLUX_REQUIRE_VULKAN=1` — устройство обязательно,
-    skip запрещён. Падения unit-тестов, PSO и surface-шагов публикуются
+10. Job `vulkan-lavapipe` (ubuntu, Mesa lavapipe): RHI-юниты, PSO-смоук,
+    surface/swapchain-смоук и GPU-проходы кадра с `FLUX_REQUIRE_VULKAN=1` —
+    устройство обязательно, skip запрещён. Шаг `vulkan_frame` рендерит кадр,
+    читает каждую стадию (G-buffer → SSAO → lighting → bloom → tonemap → TAA)
+    и требует PSNR ≥ 60 дБ против CPU-эталона от readback предыдущего прохода
+    (ADR-0042). Падения unit-тестов, PSO, surface и frame-шагов публикуются
     `::error`-аннотациями (имя упавшего теста и первая строка паники) — логи
     приватных прогонов читаются без доступа к аккаунту. Job входит в
     `sync-master`, поэтому red блокирует fast-forward `master`.

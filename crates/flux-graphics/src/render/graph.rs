@@ -305,6 +305,22 @@ impl RenderGraph {
     /// [`GraphError::UnknownImage`] — пасс ссылается на неизвестный ресурс;
     /// [`GraphError::Cycle`] — зависимости образуют цикл.
     pub fn compile(&self) -> Result<RenderGraphPlan, GraphError> {
+        self.compile_with_initial(&BTreeMap::new())
+    }
+
+    /// Компилирует граф с известными начальными состояниями изображений.
+    ///
+    /// Нужен для внешних ресурсов, переживающих кадр (история TAA,
+    /// swapchain): переход из `Undefined` стирает содержимое, поэтому
+    /// `oldLayout` обязан совпадать с фактическим состоянием.
+    ///
+    /// # Errors
+    ///
+    /// Те же, что у [`Self::compile`].
+    pub fn compile_with_initial(
+        &self,
+        initial: &BTreeMap<GraphImageKey, ImageState>,
+    ) -> Result<RenderGraphPlan, GraphError> {
         let count = self.passes.len();
         let written: Vec<Vec<GraphImageKey>> = self.passes.iter().map(GraphPass::written).collect();
         let affected: Vec<Vec<GraphImageKey>> =
@@ -346,7 +362,12 @@ impl RenderGraph {
         let mut states: BTreeMap<GraphImageKey, ImageState> = self
             .images
             .keys()
-            .map(|&key| (key, ImageState::Undefined))
+            .map(|&key| {
+                (
+                    key,
+                    initial.get(&key).copied().unwrap_or(ImageState::Undefined),
+                )
+            })
             .collect();
         let mut passes = Vec::with_capacity(count);
         for &index in &order {
@@ -379,9 +400,9 @@ impl RenderGraph {
 
     /// Применяет барьеры плана к командному буферу.
     ///
-    /// Тела пассов (draw/dispatch и привязка ресурсов) появятся в I4/I5;
-    /// здесь фиксируется только синхронизация, чтобы Render Graph не зависел
-    /// от API.
+    /// Тела пассов (draw/dispatch и привязка ресурсов) передаются хуком
+    /// [`Self::execute_with`]; здесь фиксируется только синхронизация, чтобы
+    /// Render Graph не зависел от API.
     ///
     /// # Errors
     ///
@@ -391,8 +412,27 @@ impl RenderGraph {
         plan: &RenderGraphPlan,
         commands: &mut dyn CommandBuffer,
     ) -> Result<(), RhiError> {
+        self.execute_with(plan, commands, |_, _| Ok(()))
+    }
+
+    /// Применяет барьеры и вызывает тело пасса для каждого узла плана.
+    ///
+    /// Хук получает скомпилированный пасс (имя, тип, барьеры) и командный
+    /// буфер; порядок вызовов детерминирован порядком плана. Граф по-прежнему
+    /// не знает конкретного API — тела пассов живут в рендерере.
+    ///
+    /// # Errors
+    ///
+    /// Ошибка командного буфера или тела пасса.
+    pub fn execute_with(
+        &self,
+        plan: &RenderGraphPlan,
+        commands: &mut dyn CommandBuffer,
+        mut body: impl FnMut(&CompiledPass, &mut dyn CommandBuffer) -> Result<(), RhiError>,
+    ) -> Result<(), RhiError> {
         for pass in &plan.passes {
             commands.barriers(&pass.barriers)?;
+            body(pass, commands)?;
         }
         Ok(())
     }
@@ -567,6 +607,22 @@ mod tests {
                 && barrier.from == ImageState::ColorAttachment
                 && barrier.to == ImageState::ShaderRead
         }));
+    }
+
+    #[test]
+    fn initial_states_avoid_undefined_old_layout() {
+        let graph = graph_with_two_passes();
+        let mut initial = BTreeMap::new();
+        initial.insert(key(1), ImageState::ShaderRead);
+        let plan = graph.compile_with_initial(&initial).unwrap();
+        let barrier = plan.passes[0]
+            .barriers
+            .barriers()
+            .iter()
+            .find(|barrier| barrier.image == ImageId(1))
+            .expect("image 1 must be transitioned");
+        assert_eq!(barrier.from, ImageState::ShaderRead);
+        assert_eq!(barrier.to, ImageState::ColorAttachment);
     }
 
     #[test]

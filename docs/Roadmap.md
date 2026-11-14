@@ -618,15 +618,31 @@ deadzone не теряет диапазон (rescale); rebinding roundtrip че�
       PSO-кадр с `draw` без validation-ошибок (`tests/vulkan_pso.rs`)
 - [x] RHI-контракт GPU-проходов: дескрипторные наборы (set 0, bindless),
       копирование buffer↔image и staging-readback (ADR-0039)
-- [ ] GPU-проходы G-buffer → lighting → tonemap → bloom/TAA/SSAO: sampler-ADR
-      принят (ADR-0041) и реализован в RHI; Null-эмуляция содержимого и срез
-      clear → copy → readback закрыты — проходы ждут lavapipe в CI (4.2)
+- [x] Push constants (ADR-0042): `PipelineDesc::with_push_constants`,
+      `CommandBuffer::push_constants`; Vulkan `VkPushConstantRange` +
+      `cmd_push_constants`, Null — валидация размера/выравнивания и
+      `push_constants_bytes()` для диагностики
+- [x] Render Graph для реальных пассов: `execute_with` (тела пассов) и
+      `compile_with_initial` (история TAA не начинает с `Undefined`)
+- [x] GPU-проходы кадра (ADR-0042): `render::frame::GpuFrame` —
+      `frame.gbuffer` (RT0 `Rgba8Srgb`, RT1 oct-normal `Rgba16Float`,
+      RT2 ORM `Rgba8Unorm`, depth `D32Float`) → `frame.ssao` (`Rgba16Float`)
+      → `frame.lighting` (GGX/Smith/Fresnel/multiscatter) → `frame.bloom` →
+      `frame.tonemap` (ACES) → `frame.taa` (ping-pong истории); 6 HLSL-шейдеров
+      → `shaders/compiled/frame_*.frag.spv`; push constants 64 B
+- [x] PSNR-гейт `tests/vulkan_frame.rs`: CPU-эталон каждой стадии получает
+      readback предыдущего прохода, все стадии ≥ 60 дБ, второй кадр TAA с
+      историей, чистый validation и `live_resources() == 0`; на lavapipe
+      шаг обязателен (`FLUX_REQUIRE_VULKAN=1`)
+- [x] Dynamic viewport/scissor в `begin_render_pass` — без него draw не
+      растеризовал; PSO-тест усилен readback-проверкой цвета
 - [ ] Camera-relative в тенях/IBL/скайбоксе (после появления этих проходов)
 
 **Приёмка**: ABI G-buffer и PBR/tonemap/post-формулы зафиксированы и покрыты
 тестами; Vulkan собирает PSO из SPIR-V; clearcoat добавляется keyword-ом без
-изменения layout. Срез clear → copy → readback проверяется на Null в CI;
-GPU-проходы и PSNR-эталон — после появления lavapipe в CI (4.2).
+изменения layout. GPU-проходы кадра выполняются на Vulkan и lavapipe,
+PSNR каждой стадии против CPU-эталона ≥ 60 дБ; validation чистый,
+«выделено N — освобождено N».
 
 ### 4.7 Шейдерные пермутации
 
@@ -641,8 +657,8 @@ GPU-проходы и PSNR-эталон — после появления lavapi
 
 **Приёмка**: неизвестная комбинация даёт fallback, а не крэш; кэш
 переиспользуется между ранами; бюджет пермутаций соблюдён. Runtime-ядро
-(ADR-0036), DXC-путь и PSO-кадр (I6b) готовы; реальные golden-кадры — при
-появлении GPU-проходов и readback.
+(ADR-0036), DXC-путь и PSO-кадр (I6b) готовы; GPU-проходы и readback есть,
+полные golden-кадры всей цепочки — в 4.9.
 
 ### 4.8 GraphicsSettings v1
 
@@ -667,7 +683,8 @@ GPU-проходы и PSNR-эталон — после появления lavapi
 - [x] Golden-политика: Null — bit-exact, GPU — допуск (per-pixel diff и доля
       выбросов); побитовое равенство между драйверами не требуется
 - [ ] FrameStats: фреймтайм по пассам (query pools в реальных проходах)
-- [ ] Запись зон из GPU-проходов (после GPU-проходов G-buffer/lighting)
+- [ ] Запись зон из GPU-проходов G-buffer/lighting (проходы готовы, зоны
+      ещё не пишутся)
 
 **Приёмка**: изменение пикселя без visual-change PR краснит гейт; дифф
 показывает тепловую карту. Харнесс, query pools, CPU-гейт G4 и readback

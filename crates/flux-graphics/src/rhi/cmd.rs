@@ -118,6 +118,12 @@ pub trait CommandBuffer: Send {
     /// Биндит дескрипторный набор set 0 для текущего pipeline.
     fn bind_descriptor_set(&mut self, set: DescriptorSetId) -> Result<(), RhiError>;
 
+    /// Загружает push constants в текущий pipeline (ADR-0042).
+    ///
+    /// `data` непустая и кратна 4 байтам; размер не должен превышать
+    /// `PipelineDesc::push_constant_size` привязанного pipeline.
+    fn push_constants(&mut self, data: &[u8]) -> Result<(), RhiError>;
+
     /// Копирует буфер в изображение (mip 0, слой 0, весь размер).
     ///
     /// Источник обязан быть staging-буфером. Вызов допустим только внутри

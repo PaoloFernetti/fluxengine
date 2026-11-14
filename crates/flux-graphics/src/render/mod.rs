@@ -7,6 +7,7 @@
 //! `gbuffer`, `tonemap` и `post` для будущих GPU-проходов (I6).
 
 pub mod budget;
+pub mod frame;
 pub mod gbuffer;
 pub mod graph;
 pub mod pbr;
@@ -17,6 +18,12 @@ pub mod tonemap;
 pub mod transfer;
 
 pub use budget::{VramBudget, DEFAULT_HYSTERESIS};
+pub use frame::{
+    decode_f16, decode_rgba16f, decode_srgb_u8, decode_unorm_u8, encode_srgb_u8, oct_decode,
+    psnr_bytes, psnr_channels, reference_bloom, reference_gbuffer, reference_lighting,
+    reference_ssao, reference_taa, reference_tonemap, FrameParams, FrameStage, GpuFrame,
+    ReferenceGbuffer, FRAME_PUSH_CONSTANT_BYTES,
+};
 pub use gbuffer::GbufferLayout;
 pub use graph::{
     AliasSlot, CompiledPass, GraphError, GraphImage, GraphImageKey, GraphPass, PassKind,

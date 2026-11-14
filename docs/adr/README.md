@@ -76,7 +76,7 @@ flowchart LR
 - Каждый термин из ADR обязан иметь запись в глоссарии канона
   (правило «термин имеет владельца»).
 
-## Индекс (ADR-0001…0027 — архитектурная фаза; 0028…0030 — этап 2; 0031…0033 — этап 3; 0034…0041 — этап 4)
+## Индекс (ADR-0001…0027 — архитектурная фаза; 0028…0030 — этап 2; 0031…0033 — этап 3; 0034…0042 — этап 4)
 
 | ADR | Решение | Источник |
 |---|---|---|
@@ -121,6 +121,7 @@ flowchart LR
 | 0039 | Дескрипторные наборы (set 0, bindless-массивы), копирование buffer↔image, staging readback | flux-graphics |
 | 0040 | `flux-release`: Conventional Commits → semver, CHANGELOG, Cargo.toml, commit/tag; publish и GitHub Release opt-in | tools/flux-release |
 | 0041 | Сэмплеры: раздельные `SampledImage` + `Sampler` (DXC/SPIR-V и DX12), combined — только совместимость; `ShaderRead` как единственное состояние чтения | flux-graphics |
+| 0042 | GPU-проходы кадра: push constants 64 B, `execute_with`/`compile_with_initial`, G-buffer → SSAO → lighting → bloom → tonemap → TAA, PSNR-эталон от readback предыдущего прохода | flux-graphics |
 
 Дополнительные решения, зафиксированные в плане, но не требующие отдельных
 ADR-файлов (частично покрыты выше): input abstraction (flux-platform),
@@ -158,6 +159,10 @@ undo × PIE × стриминг (flux-editor), golden-сейвы, virtual textur
   в копиях buffer↔image. Draw/dispatch содержимое не меняют (шейдеры не
   исполняются), поэтому GPU-эталон остаётся на Vulkan. Решения ADR-0039/0041
   не меняются.
+- ADR-0042 уточняет границы ADR-0039/0041: чтение текстур используется
+  реальными проходами кадра, push constants дополняют дескрипторные наборы
+  (а не заменяют uniform-буферы как общий механизм). Формулировки ADR-0039
+  и ADR-0041 не переписываются.
 - Метки `D…` внутри ADR-0041 (`D3`, `D8`) — исторические обозначения работ
   этапа 4; отдельной таблицы долгов больше нет, актуальный порядок — чекбоксы
   этапов 4–7 в [Roadmap.md](../Roadmap.md). Формулировки ADR не переписываются.

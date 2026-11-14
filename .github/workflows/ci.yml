@@ -177,6 +177,21 @@ jobs:
           fi
           exit "$status"
 
+      - name: Vulkan frame passes + PSNR (device required)
+        env:
+          FLUX_REQUIRE_VULKAN: "1"
+          RUST_BACKTRACE: "1"
+        run: |
+          set +e
+          cargo test -p flux-graphics --features vulkan --test vulkan_frame -- --nocapture 2>&1 | tee frame.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            failed=$(grep -E '^test .* FAILED$' frame.log | head -n 5 | tr '\n' ';')
+            reason=$(grep -m1 -E 'panicked at|assertion .* failed|thread .* panicked|psnr' frame.log | tr '\n' ' ')
+            echo "::error title=Frame passes failed::${failed} ${reason}"
+          fi
+          exit "$status"
+
   release-check:
     name: conventional commits (flux-release)
     if: github.event_name == 'pull_request'

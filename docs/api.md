@@ -43,6 +43,7 @@
 | 4 | I6b | `tools/flux-assetc shader` (DXC → SPIR-V); RHI query pools (`QueryPoolDesc`, `write_timestamp`, `read_query_pool`); G4-гейт |
 | 4 | I9 | RHI для GPU-проходов: дескрипторные наборы (`BindingKind`, `DescriptorSetDesc`, `DescriptorWrite`), `bind_descriptor_set`, `copy_buffer_to_image`/`copy_image_to_buffer`, `write_buffer`/`read_buffer` (ADR-0039) |
 | 4 | I9b | поверхности (`VkSurfaceKHR`) и present-swapchain (`VkSwapchainKHR`): `SurfaceTarget`/`WindowSurface`, headless WSI, `Swapchain::image_count` |
+| 4 | I9c | GPU-проходы кадра: push constants, `RenderGraph::execute_with`/`compile_with_initial`, `render::frame::GpuFrame` (G-buffer → SSAO → lighting → bloom → tonemap → TAA), CPU-эталоны и PSNR-гейт (ADR-0042) |
 | — | release | `tools/flux-release`: Conventional Commits → semver, версия `Cargo.toml`, `CHANGELOG.md`, commit/annotated tag; pre-release, монорепо fixed/independent, opt-in publish/gh/semver-checks (ADR-0040) |
 
 ## Общие конвенции
@@ -6359,21 +6360,21 @@ use flux_core::memory::MemoryTag;
 use flux_graphics::{
     create_device, AliasSlot, BackendKind, BarrierBatch, BindingDecl, BudgetSnapshot, BufferId,
     BufferUsage, CacheStats, Camera, Capabilities, CommandBuffer, CompiledPass,
-    DeterministicCompiler, DeviceSignature, FeatureKind, GbufferLayout, GoldenBaseline, GoldenError,
-    GoldenSettings, GoldenStore, GoldenVerdict, GpuBufferDesc, GpuImageDesc, GpuProfiler, GpuZone,
-    GraphError, GraphImage, GraphImageKey, GraphPass, GraphicsFeature, GraphicsFeatureRegistry,
-    GraphicsSettings, HardwareTier, ImageBarrier, ImageId, ImageState, InFlightBatch, KeywordDecl,
-    KeywordMask, KeywordSet, Material, NullCommandBuffer, NullDevice, NullVramAllocator, PassKind,
-    PermutationCache, PermutationRequest, PipelineCacheFile, PipelineCacheLoad, PipelineDesc,
-    PipelineId, PipelineKind, PipelineVariant, PresentMode, Pressure, PrimitiveTopology,
-    QualityPreset, QueryPoolDesc, QueryPoolId, RenderGraph, RenderGraphPlan, RenderPassDesc,
-    RenderScene, ResolvedShader, ResourceEntry, ResourceKey, ResourceRegistry, ResourceState,
-    Rgba8Image, RhiDevice, RhiError, SettingsChange, ShaderCompiler, ShaderDeclaration, ShaderError,
-    ShaderLibrary, ShaderStage, SurfaceId, SurfaceKind, SurfaceTarget, Swapchain, SwapchainDesc,
-    SwapchainId, TextureFormat, TextureUsage, Tonemap, TransferSystem, UploadJob, VertexInput,
-    VramAllocator, VramBudget, VramLease, WindowSurface, MAX_KEYWORDS, MAX_MATERIAL_KEYWORDS,
-    MAX_RENDER_SCALE, MAX_SHADOW_RESOLUTION, MIN_RENDER_SCALE, MIN_SHADOW_RESOLUTION,
-    VERTEX_FORMAT_V1,
+    DeterministicCompiler, DeviceSignature, FeatureKind, FrameParams, FrameStage, GbufferLayout,
+    GoldenBaseline, GoldenError, GoldenSettings, GoldenStore, GoldenVerdict, GpuBufferDesc, GpuFrame,
+    GpuImageDesc, GpuProfiler, GpuZone, GraphError, GraphImage, GraphImageKey, GraphPass,
+    GraphicsFeature, GraphicsFeatureRegistry, GraphicsSettings, HardwareTier, ImageBarrier, ImageId,
+    ImageState, InFlightBatch, KeywordDecl, KeywordMask, KeywordSet, Material, NullCommandBuffer,
+    NullDevice, NullVramAllocator, PassKind, PermutationCache, PermutationRequest, PipelineCacheFile,
+    PipelineCacheLoad, PipelineDesc, PipelineId, PipelineKind, PipelineVariant, PresentMode,
+    Pressure, PrimitiveTopology, QualityPreset, QueryPoolDesc, QueryPoolId, ReferenceGbuffer,
+    RenderGraph, RenderGraphPlan, RenderPassDesc, RenderScene, ResolvedShader, ResourceEntry,
+    ResourceKey, ResourceRegistry, ResourceState, Rgba8Image, RhiDevice, RhiError, SettingsChange,
+    ShaderCompiler, ShaderDeclaration, ShaderError, ShaderLibrary, ShaderStage, SurfaceId,
+    SurfaceKind, SurfaceTarget, Swapchain, SwapchainDesc, SwapchainId, TextureFormat, TextureUsage,
+    Tonemap, TransferSystem, UploadJob, VertexInput, VramAllocator, VramBudget, VramLease,
+    WindowSurface, FRAME_PUSH_CONSTANT_BYTES, MAX_KEYWORDS, MAX_MATERIAL_KEYWORDS, MAX_RENDER_SCALE,
+    MAX_SHADOW_RESOLUTION, MIN_RENDER_SCALE, MIN_SHADOW_RESOLUTION, VERTEX_FORMAT_V1,
 };
 ```
 
@@ -6741,10 +6742,15 @@ Compute pipeline из SPIR-V.
 `with_depth_format(TextureFormat)`, `with_vertex_stride(u32)`,
 `with_topology(PrimitiveTopology)`,
 `with_bindings(&'static [DescriptorBinding])`,
-`with_entries(vertex_entry, fragment_entry)`.
+`with_push_constants(u32)`, `with_entries(vertex_entry, fragment_entry)`.
 
 `with_bindings` описывает set 0 (ADR-0039): layout кэшируется по составу
 биндингов, `bind_descriptor_set` требует совместимый pipeline.
+
+`with_push_constants(size)` объявляет блок push constants (ADR-0042):
+Vulkan добавляет `VkPushConstantRange` (`VERTEX | FRAGMENT` для graphics,
+`COMPUTE` для compute), Null хранит размер для валидации
+`CommandBuffer::push_constants`. Значение по умолчанию — `0`.
 
 `with_vertex_stride(0)` означает pipeline без vertex buffer: Vulkan не
 объявляет vertex input, шейдер обязан строить вершины из `SV_VertexID`
@@ -7522,6 +7528,21 @@ cmd.set_pipeline(PipelineId(0)).unwrap();
 assert_eq!(cmd.pipeline(), Some(PipelineId(0)));
 ```
 
+#### `CommandBuffer::push_constants(&mut self, data: &[u8]) -> Result<(), RhiError>`
+
+Записывает блок push constants (ADR-0042). Требования: `begin`, активный
+pipeline с объявленным `push_constant_size`, данные непустые, кратны 4 и не
+больше объявленного размера — иначе `Validation`. Vulkan вызывает
+`cmd_push_constants`, Null сохраняет байты (`push_constants_bytes()`).
+
+```rust
+let mut cmd = NullCommandBuffer::new();
+cmd.begin().unwrap();
+cmd.set_pipeline(PipelineId(0)).unwrap();
+cmd.push_constants(&[0u8; 64]).unwrap();
+assert_eq!(cmd.push_constants_bytes(), &[0u8; 64]);
+```
+
 #### `CommandBuffer::bind_descriptor_set(&mut self, set) -> Result<(), RhiError>`
 
 Биндит набор set 0 к текущему pipeline; до `set_pipeline` — `Validation`.
@@ -7956,6 +7977,18 @@ let mut cmd = NullCommandBuffer::new();
 cmd.begin().unwrap();
 cmd.set_pipeline(PipelineId(0)).unwrap();
 assert_eq!(cmd.pipeline(), Some(PipelineId(0)));
+```
+
+#### `NullCommandBuffer::push_constants_bytes(&self) -> &[u8]`
+
+Последний записанный блок push constants (диагностика; ADR-0042).
+
+```rust
+let mut cmd = NullCommandBuffer::new();
+cmd.begin().unwrap();
+cmd.set_pipeline(PipelineId(0)).unwrap();
+cmd.push_constants(&[1, 0, 0, 0]).unwrap();
+assert_eq!(cmd.push_constants_bytes().len(), 4);
 ```
 
 #### `create_device(backend) -> Result<Box<dyn RhiDevice>, RhiError>`
@@ -8450,15 +8483,46 @@ let plan = graph.compile().unwrap();
 assert_eq!(plan.order, vec!["gbuffer", "lighting"]);
 ```
 
+#### `RenderGraph::compile_with_initial(&self, initial) -> Result<RenderGraphPlan, GraphError>`
+
+Как `compile`, но `oldLayout` барьеров берётся из карты фактических
+состояний `&BTreeMap<GraphImageKey, ImageState>`; отсутствующие ключи
+начинают с `Undefined`. Нужен кадрам с историей (TAA): изображение истории
+после первого кадра уже не `Undefined`, и барьер обязан это учитывать
+(ADR-0042).
+
+```rust
+let mut initial = BTreeMap::new();
+initial.insert(GraphImageKey(1), ImageState::ShaderRead);
+let plan = graph.compile_with_initial(&initial).unwrap();
+assert_eq!(plan.passes[0].barriers.barriers()[0].from, ImageState::ShaderRead);
+```
+
 #### `RenderGraph::execute(&self, plan, commands) -> Result<(), RhiError>`
 
-Применяет барьеры плана к командному буферу. Тела пассов (draw/dispatch и
-привязка ресурсов) появятся в I4/I5 — контракт синхронизации уже зафиксирован.
+Применяет барьеры плана к командному буферу; эквивалент `execute_with` с
+пустым телом пасса.
 
 ```rust
 let mut commands = NullCommandBuffer::new();
 commands.begin().unwrap();
 graph.execute(&plan, &mut commands).unwrap();
+commands.end().unwrap();
+assert_eq!(commands.barriers_applied(), plan.barrier_count());
+```
+
+#### `RenderGraph::execute_with(&self, plan, commands, body) -> Result<(), RhiError>`
+
+Применяет барьеры пасса и вызывает `body(pass, commands)` — тело пасса
+пишет draw/pipeline/дескрипторы, не отдавая графу RHI-вызовы (ADR-0042).
+Порядок пассов и синхронизация остаются за графом.
+
+```rust
+let mut commands = NullCommandBuffer::new();
+commands.begin().unwrap();
+graph
+    .execute_with(&plan, &mut commands, |_pass, _commands| Ok(()))
+    .unwrap();
 commands.end().unwrap();
 assert_eq!(commands.barriers_applied(), plan.barrier_count());
 ```
@@ -8665,8 +8729,112 @@ assert_eq!(taa_blend(Vec3::ZERO, Vec3::ONE, 0.5), Vec3::splat(0.5));
 assert_eq!(ssao_factor(1.0, &[], 0.1), 1.0);
 ```
 
-GPU-проходы (G-buffer → lighting → tonemap → bloom/TAA/SSAO) появятся
-после DXC-пайплайна (I6b); контракты формул при этом не меняются.
+### GPU-проходы кадра ✅
+
+Реальные Vulkan-проходы кадра (ADR-0042), модуль `render::frame`.
+`GpuFrame` владеет offscreen-изображениями, шестью pipeline-ами из
+закоммиченных SPIR-V (`shaders/compiled/frame_*.frag.spv`) и дескрипторными
+наборами; запись идёт через `RenderGraph::execute_with`, барьеры и порядок
+пассов остаются за графом. CPU-эталоны (`reference_*`) повторяют формулы
+шейдеров на `f32` для PSNR-гейта.
+
+#### `FrameParams`
+
+Поля: `sun` (направление на солнце, `[f32; 3]`), `radiance` (HDR),
+`exposure` (стопы), `bloom_threshold`, `bloom_intensity`, `taa_alpha`
+(`0..=1`), `ssao_radius` (единицы Reversed-Z). `Default`: солнце
+`[-0.4, 0.5, 0.75]`, радиантность `[2.0, 1.9, 1.8]`, экспозиция `0`,
+порог `1.0`, интенсивность `0.5`, alpha `0.5`, радиус `0.05`.
+
+#### `FrameParams::push_constants(width, height) -> [u8; 64]`
+
+Сериализует блок из 4 × float4: `1/width`, `1/height`, экспозиция, порог
+bloom, солнце, интенсивность bloom, радиантность, вес TAA, радиус SSAO.
+Размер — `FRAME_PUSH_CONSTANT_BYTES = 64`; блок передаётся
+`CommandBuffer::push_constants` и читается шейдерами как
+`[[vk::push_constant]] ConstantBuffer<FrameConstants>`.
+
+```rust
+let params = FrameParams::default();
+let push = params.push_constants(64, 64);
+assert_eq!(push.len(), FRAME_PUSH_CONSTANT_BYTES as usize);
+```
+
+#### `GpuFrame::new(device, width, height) -> Result<Self, RhiError>`
+
+Создаёт десять изображений (RT0 `Rgba8Srgb`, RT1 `Rgba16Float`, RT2
+`Rgba8Unorm`, depth `D32Float`, SSAO `Rgba16Float`, HDR/bloom/tonemap/
+`taa_a`/`taa_b` — `Rgba16Float`), sampler `Nearest`, шесть pipeline-ов
+(push constants 64 B, G-buffer — с depth `D32Float`) и пять наборов.
+История TAA очищается в ноль, поэтому первый кадр валиден.
+
+#### `GpuFrame::render(&mut self, device, params) -> Result<(), RhiError>`
+
+Кадр целиком: `frame.gbuffer` → `frame.ssao` → `frame.lighting` →
+`frame.bloom` → `frame.tonemap` → `frame.taa`. План компилируется с
+фактическими состояниями (`compile_with_initial`), после submit
+`history`/`output` меняются местами (ping-pong), а набор TAA переписывается
+на новый выход. Требует `wait_idle` до возврата.
+
+#### `GpuFrame::stage(&self, stage) -> (ImageId, ImageState, u32)`
+
+Изображение, его текущее состояние и байт на пиксель для `FrameStage`:
+`Albedo` (RT0, 4), `Normal` (RT1, 8), `Orm` (RT2, 4), `Depth` (4),
+`Ssao`/`Hdr`/`Bloom`/`Tonemap` (8), `Taa` — последний записанный выход (8).
+
+#### `GpuFrame::readback(&mut self, device, stage) -> Result<Vec<u8>, RhiError>`
+
+Читает стадию в staging-буфер: барьер `from → TransferSrc`,
+`copy_image_to_buffer`, `wait_idle`, `read_buffer`; состояние изображения
+становится `TransferSrc`. Байты — сырые для формата стадии.
+
+#### `GpuFrame::destroy(self, device)`
+
+Освобождает pipeline-ы, наборы, sampler и все десять изображений.
+
+#### CPU-эталоны
+
+- `reference_gbuffer(width, height) -> ReferenceGbuffer` — процедурная
+  «выпуклость»: `albedo`, единичные `normal`, `roughness`, `metallic`,
+  `ao_seed`, `depth` (Reversed-Z).
+- `reference_ssao(width, height, depth, radius) -> Vec<f32>` — 4 соседа,
+  формула `post::ssao_factor`.
+- `reference_lighting(width, height, albedo_srgb, normal_oct, orm, ao, params)
+  -> Vec<Vec3>` — GGX/Smith/Fresnel/multiscatter как `pbr::evaluate_direct`,
+  умноженный на `ao` (`&[f32]`, не 8-битный байт).
+- `reference_bloom(width, height, hdr, threshold) -> Vec<Vec3>` — порог +
+  5-точечный box.
+- `reference_tonemap(hdr, bloom, params) -> Vec<Vec3>` — combine + ACES.
+- `reference_taa(current, history, alpha) -> Vec<Vec3>` — `taa_blend`.
+
+Эталон получает **readback предыдущего прохода**, поэтому проверяется
+математика стадии, а не квантование её входов (ADR-0042).
+
+#### Декодеры и PSNR
+
+`decode_srgb_u8(byte)`, `encode_srgb_u8(value)`, `decode_unorm_u8(byte)`,
+`decode_f16(bits)`, `decode_rgba16f(bytes, index) -> [f32; 4]`,
+`oct_decode(x, y) -> Vec3`; `psnr_channels(reference, actual, peak) -> f64`,
+`psnr_bytes(reference, actual) -> f64` (`f64::INFINITY` для идентичных
+данных). 8-битные цели сравниваются байтами, fp16 — декодированными
+значениями; peak = `1.0` для LDR/нормалей и `max(reference)` для HDR.
+
+```rust
+assert_eq!(encode_srgb_u8(decode_srgb_u8(128)), 128);
+assert!(psnr_channels(&[0.5], &[0.5], 1.0).is_infinite());
+```
+
+#### Проверка
+
+`tests/vulkan_frame.rs` рендерит 32×32, читает каждую стадию и сравнивает с
+CPU-эталоном от readback предыдущего прохода: все стадии ≥ 60 дБ, второй
+кадр TAA с историей, validation чистый, `live_resources() == 0` после
+`destroy`. Без Vulkan тест завершается успешно; на lavapipe CI запускает его
+с `FLUX_REQUIRE_VULKAN=1`.
+
+```text
+cargo test -p flux-graphics --features vulkan --test vulkan_frame
+```
 
 ### Шейдерные пермутации ✅
 
@@ -10133,6 +10301,14 @@ https и ssh remote.
   map-readback; Null — валидация layout-ов и детерминированный readback.
   `tests/vulkan_pso.rs`: roundtrip буфера, descriptor set и clear-кадра через
   staging-буфер.
+- **I9c (этап 4, ADR-0042)**: GPU-проходы кадра — `PipelineDesc::
+  with_push_constants`, `CommandBuffer::push_constants` (Vulkan
+  `VkPushConstantRange`/`cmd_push_constants`, Null — размер/выравнивание и
+  `push_constants_bytes`), `RenderGraph::execute_with`/`compile_with_initial`;
+  `render::frame::GpuFrame` — G-buffer → SSAO → lighting → bloom → tonemap →
+  TAA, ping-pong истории, `FrameParams`/`FrameStage`, `readback`/`destroy`;
+  CPU-эталоны `reference_*`, декодеры, `psnr_*`; `tests/vulkan_frame.rs` —
+  все стадии ≥ 60 дБ, второй кадр TAA, чистый validation.
 - **Инструменты (ADR-0040)**: `tools/flux-release` — CLI `release`/`version`/
   `changelog`/`check`/`init`/`doctor`; `Options`, `ReleaseConfig`
   (fixed/independent, en/ru, `commit_types`, skip-маркеры, внешний шаблон),

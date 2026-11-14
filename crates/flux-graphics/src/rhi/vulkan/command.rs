@@ -148,6 +148,29 @@ impl CommandBuffer for VulkanCommandBuffer {
                 vk::SubpassContents::INLINE,
             );
         }
+        // Pipeline использует dynamic viewport/scissor (ADR-0035): без явной
+        // установки draw не растеризует ни одного фрагмента.
+        let viewport = vk::Viewport {
+            x: 0.0,
+            y: 0.0,
+            width: width as f32,
+            height: height as f32,
+            min_depth: 0.0,
+            max_depth: 1.0,
+        };
+        let scissor = vk::Rect2D {
+            offset: vk::Offset2D { x: 0, y: 0 },
+            extent: vk::Extent2D { width, height },
+        };
+        // SAFETY: command buffer is inside the render pass; extent matches.
+        unsafe {
+            self.context
+                .device
+                .cmd_set_viewport(self.command, 0, std::slice::from_ref(&viewport));
+            self.context
+                .device
+                .cmd_set_scissor(self.command, 0, std::slice::from_ref(&scissor));
+        }
         self.in_pass = true;
         Ok(())
     }
@@ -224,6 +247,40 @@ impl CommandBuffer for VulkanCommandBuffer {
         self.pipeline = Some(pipeline);
         self.pipeline_kind = Some(kind);
         self.pipeline_layout = Some(layout);
+        Ok(())
+    }
+
+    fn push_constants(&mut self, data: &[u8]) -> Result<(), RhiError> {
+        self.require_recording()?;
+        if data.is_empty() || data.len() % 4 != 0 {
+            return Err(RhiError::validation(
+                "push constants must be non-empty and 4-byte aligned",
+            ));
+        }
+        let (Some(layout), Some(kind), Some(pipeline)) =
+            (self.pipeline_layout, self.pipeline_kind, self.pipeline)
+        else {
+            return Err(RhiError::validation("push constants require a pipeline"));
+        };
+        let size = {
+            let store = self.context.store.lock();
+            store.pipeline_entry(pipeline)?.push_constant_size
+        };
+        if data.len() as u32 > size {
+            return Err(RhiError::validation(
+                "push constants exceed the pipeline range",
+            ));
+        }
+        let stages = match kind {
+            PipelineKind::Graphics => vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+            PipelineKind::Compute => vk::ShaderStageFlags::COMPUTE,
+        };
+        // SAFETY: layout belongs to the bound pipeline; data is 4-byte aligned.
+        unsafe {
+            self.context
+                .device
+                .cmd_push_constants(self.command, layout, stages, 0, data);
+        }
         Ok(())
     }
 

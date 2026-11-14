@@ -60,8 +60,13 @@ fn solid_pipeline_draws_without_validation_errors() {
 
     let target = device
         .create_image(
-            &GpuImageDesc::new("pso-target", 64, 64, TextureFormat::Rgba8Srgb)
-                .with_usage(TextureUsage::render_target()),
+            &GpuImageDesc::new("pso-target", 64, 64, TextureFormat::Rgba8Srgb).with_usage(
+                TextureUsage {
+                    render_target: true,
+                    transfer_src: true,
+                    ..TextureUsage::none()
+                },
+            ),
         )
         .unwrap();
 
@@ -92,6 +97,39 @@ fn solid_pipeline_draws_without_validation_errors() {
     commands.end().unwrap();
     commands.finish().unwrap();
     device.wait_idle().unwrap();
+
+    // Readback доказывает, что draw реально растеризовал кадр (динамический
+    // viewport/scissor обязателен): цвет совпадает с фрагментным шейдером.
+    let staging = device
+        .create_buffer(&GpuBufferDesc::new(
+            "pso-readback",
+            64 * 64 * 4,
+            BufferUsage::staging(),
+        ))
+        .unwrap();
+    let mut commands = device.create_command_buffer().unwrap();
+    commands.begin().unwrap();
+    let mut batch = BarrierBatch::new();
+    batch.transition(target, ImageState::ColorAttachment, ImageState::TransferSrc);
+    commands.barriers(&batch).unwrap();
+    commands.copy_image_to_buffer(target, staging).unwrap();
+    commands.end().unwrap();
+    commands.finish().unwrap();
+    device.wait_idle().unwrap();
+    let pixels = device.read_buffer(staging).unwrap();
+    assert!((i32::from(pixels[0]) - 255).abs() <= 1, "red={}", pixels[0]);
+    assert!(
+        (i32::from(pixels[1]) - 188).abs() <= 2,
+        "green={}",
+        pixels[1]
+    );
+    assert!(
+        (i32::from(pixels[2]) - 137).abs() <= 2,
+        "blue={}",
+        pixels[2]
+    );
+    assert_eq!(pixels[3], 255);
+    assert!(device.destroy_buffer(staging));
 
     assert_eq!(device.validation_errors(), before);
     assert!(device.destroy_pipeline(pipeline));

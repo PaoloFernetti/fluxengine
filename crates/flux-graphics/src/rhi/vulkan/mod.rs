@@ -198,6 +198,7 @@ pub(crate) struct ImageEntry {
 pub(crate) struct PipelineEntry {
     pub(crate) pipeline: vk::Pipeline,
     pub(crate) layout: vk::PipelineLayout,
+    pub(crate) push_constant_size: u32,
     pub(crate) modules: Vec<vk::ShaderModule>,
     pub(crate) kind: PipelineKind,
 }
@@ -636,7 +637,21 @@ fn build_pipeline(
         )
     };
     let set_layouts: Vec<vk::DescriptorSetLayout> = set_layout.into_iter().collect();
-    let layout_info = vk::PipelineLayoutCreateInfo::default().set_layouts(&set_layouts);
+    // Push constants (ADR-0042): диапазон на все graphics/compute стадии.
+    let push_range = (desc.push_constant_size > 0).then(|| {
+        let stages = match desc.kind {
+            PipelineKind::Graphics => vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+            PipelineKind::Compute => vk::ShaderStageFlags::COMPUTE,
+        };
+        vk::PushConstantRange::default()
+            .stage_flags(stages)
+            .offset(0)
+            .size(desc.push_constant_size)
+    });
+    let push_ranges: Vec<vk::PushConstantRange> = push_range.into_iter().collect();
+    let layout_info = vk::PipelineLayoutCreateInfo::default()
+        .set_layouts(&set_layouts)
+        .push_constant_ranges(&push_ranges);
     // SAFETY: layout description references layouts owned by the store.
     let layout =
         unsafe { device.create_pipeline_layout(&layout_info, None) }.map_err(convert::map_vk)?;
@@ -1214,6 +1229,7 @@ impl RhiDevice for VulkanDevice {
                     PipelineEntry {
                         pipeline,
                         layout,
+                        push_constant_size: desc.push_constant_size,
                         modules,
                         kind: desc.kind,
                     },

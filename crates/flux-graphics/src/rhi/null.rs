@@ -767,6 +767,7 @@ pub struct NullCommandBuffer {
     passes: u32,
     pipeline: Option<PipelineId>,
     bound_set: Option<DescriptorSetId>,
+    push_constants: Vec<u8>,
     timestamps: Vec<(QueryPoolId, u32)>,
     query_pools: BTreeMap<u64, u32>,
     buffers: BTreeMap<u64, BufferUsage>,
@@ -851,6 +852,12 @@ impl NullCommandBuffer {
     #[must_use]
     pub fn pipeline(&self) -> Option<PipelineId> {
         self.pipeline
+    }
+
+    /// Последний загруженный блок push constants (диагностика, ADR-0042).
+    #[must_use]
+    pub fn push_constants_bytes(&self) -> &[u8] {
+        &self.push_constants
     }
 
     /// Записанные таймстемпы.
@@ -981,6 +988,23 @@ impl CommandBuffer for NullCommandBuffer {
             return Err(RhiError::validation("unknown descriptor set"));
         }
         self.bound_set = Some(set);
+        Ok(())
+    }
+
+    fn push_constants(&mut self, data: &[u8]) -> Result<(), RhiError> {
+        if !self.begun {
+            return Err(RhiError::validation("command buffer is not begun"));
+        }
+        if self.pipeline.is_none() {
+            return Err(RhiError::validation("push constants require a pipeline"));
+        }
+        if data.is_empty() || data.len() % 4 != 0 {
+            return Err(RhiError::validation(
+                "push constants must be non-empty and 4-byte aligned",
+            ));
+        }
+        self.push_constants.clear();
+        self.push_constants.extend_from_slice(data);
         Ok(())
     }
 
@@ -1545,6 +1569,18 @@ mod tests {
             device.read_buffer(hdr_readback).unwrap(),
             vec![0x00, 0x3C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3C]
         );
+    }
+
+    #[test]
+    fn push_constants_require_pipeline_and_alignment() {
+        let mut commands = NullCommandBuffer::new();
+        commands.begin().unwrap();
+        assert!(commands.push_constants(&[0u8; 16]).is_err());
+        commands.set_pipeline(PipelineId(0)).unwrap();
+        assert!(commands.push_constants(&[0u8; 3]).is_err());
+        commands.push_constants(&[7u8; 16]).unwrap();
+        assert_eq!(commands.push_constants_bytes(), &[7u8; 16]);
+        commands.end().unwrap();
     }
 
     #[test]

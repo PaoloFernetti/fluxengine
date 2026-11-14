@@ -22,6 +22,7 @@ Roadmap: [docs/Roadmap.md](../../docs/Roadmap.md). API: [docs/api.md](../../docs
 | `render::gbuffer` | ABI ADR-0017: форматы RT0–RT2, depth, `GbufferLayout` | I5 ✅ |
 | `render::tonemap` | ACES/AgX (ADR-0018) | I5 ✅ (CPU-эталон) |
 | `render::post` | bloom/TAA/SSAO — формулы | I5 ✅ (CPU-эталон) |
+| `render::frame` | GPU-проходы кадра, CPU-эталоны и PSNR-гейт | I9c ✅ (ADR-0042) |
 | `shaders` | `shader.json`, keyword-маски, fallback, кэш 3 уровней | I6 ✅ (DXC — I6b) |
 | `settings` | `GraphicsSettings` v1, `HardwareTier`/`QualityPreset`, FeatureRegistry | I7 ✅ |
 | `golden` | PSNR/SSIM, per-runner baselines, heatmap, `visual_change`-гейт | I8 ✅ |
@@ -85,6 +86,10 @@ flux-graphics = { workspace = true, features = ["vulkan"] }
   `count`); `create/update/destroy_descriptor_set`, `bind_descriptor_set`.
   Сэмплеры (ADR-0041): `SamplerDesc`/`SamplerId`, `BindingKind::Sampler`,
   `create_sampler`/`destroy_sampler`, `supports_sampler_anisotropy`.
+- Push constants (ADR-0042): `PipelineDesc::with_push_constants(size)`,
+  `CommandBuffer::push_constants(&[u8])`; Vulkan создаёт `VkPushConstantRange`
+  (`VERTEX | FRAGMENT` / `COMPUTE`) и вызывает `cmd_push_constants`, Null
+  валидирует размер/выравнивание и отдаёт `push_constants_bytes()`.
 - Копирование и readback: `copy_buffer_to_image`/`copy_image_to_buffer`
   (вне render pass), `write_buffer`/`read_buffer` для host-visible staging.
   Null-бэкенд эмулирует содержимое (WP D4): clear color/depth в
@@ -95,6 +100,18 @@ flux-graphics = { workspace = true, features = ["vulkan"] }
   `tools/flux-assetc shader`). `tests/vulkan_pso.rs` собирает PSO, рисует
   треугольник в `Rgba8Srgb`-цель, проверяет descriptor set и clear-кадр
   через staging-readback; лог validation остаётся чистым.
+- GPU-проходы кадра (ADR-0042): `render::frame::GpuFrame` —
+  `frame.gbuffer` (RT0/RT1/RT2 + depth) → `frame.ssao` → `frame.lighting`
+  (GGX/Smith/Fresnel/multiscatter) → `frame.bloom` → `frame.tonemap` (ACES)
+  → `frame.taa` (ping-pong истории). Шейдеры — `shaders/frame_*.frag.hlsl`
+  → `shaders/compiled/frame_*.frag.spv`; параметры кадра идут push
+  constants (64 B). Render Graph пишет тела пассов через `execute_with`,
+  `oldLayout` истории берётся из `compile_with_initial`. `begin_render_pass`
+  выставляет dynamic viewport/scissor по extent фреймбуфера.
+- PSNR-гейт (ADR-0042): CPU-эталон каждой стадии получает readback
+  предыдущего прохода; 8-битные цели сравниваются байтами, fp16 —
+  декодированными значениями. `tests/vulkan_frame.rs`: все стадии ≥ 60 дБ,
+  второй кадр TAA с историей, чистый validation, `live_resources() == 0`.
 
 ## Проверки
 
@@ -103,9 +120,21 @@ cargo test -p flux-graphics
 cargo test -p flux-graphics --features vulkan
 cargo test -p flux-graphics --features vulkan --test vulkan_pso
 cargo test -p flux-graphics --features vulkan --test vulkan_surface
+cargo test -p flux-graphics --features vulkan --test vulkan_frame
 cargo test -p flux-graphics --test golden_gate
 cargo clippy -p flux-graphics --features vulkan --all-targets -- -D warnings
 ```
 
-`vulkan_pso` без доступного Vulkan-устройства завершается успешно
-(headless-CI), поэтому его можно запускать на любом раннере.
+`vulkan_pso`, `vulkan_surface` и `vulkan_frame` без доступного
+Vulkan-устройства завершаются успешно (headless-CI), поэтому их можно
+запускать на любом раннере; на lavapipe CI включает
+`FLUX_REQUIRE_VULKAN=1` и падает вместо skip-а.
+
+Пересборка SPIR-V шейдеров кадра:
+
+```text
+cargo build -p flux-assetc
+target/debug/flux-assetc shader crates/flux-graphics/shaders/frame_gbuffer.frag.hlsl \
+  --out crates/flux-graphics/shaders/compiled/frame_gbuffer.frag.spv \
+  --entry fs_main --stage ps_6_0
+```

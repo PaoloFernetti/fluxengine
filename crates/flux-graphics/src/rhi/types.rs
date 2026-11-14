@@ -832,6 +832,8 @@ pub struct PipelineDesc {
     pub topology: PrimitiveTopology,
     /// Дескрипторные биндинги set 0 (layout без дескрипторов по умолчанию).
     pub bindings: &'static [DescriptorBinding],
+    /// Размер блока push constants, байт (`0` — без push constants).
+    pub push_constant_size: u32,
 }
 
 impl PipelineDesc {
@@ -852,6 +854,7 @@ impl PipelineDesc {
             vertex_stride: 12,
             topology: PrimitiveTopology::TriangleList,
             bindings: &[],
+            push_constant_size: 0,
         }
     }
 
@@ -912,6 +915,13 @@ impl PipelineDesc {
     #[must_use]
     pub const fn with_bindings(mut self, bindings: &'static [DescriptorBinding]) -> Self {
         self.bindings = bindings;
+        self
+    }
+
+    /// Задаёт размер блока push constants (ADR-0042).
+    #[must_use]
+    pub const fn with_push_constants(mut self, size: u32) -> Self {
+        self.push_constant_size = size;
         self
     }
 
