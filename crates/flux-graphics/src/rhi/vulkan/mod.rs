@@ -1861,7 +1861,7 @@ fn create_window_surface(
     use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
     match window.window {
         RawWindowHandle::Xlib(handle) => {
-            let display = match window.display {
+            let display: *mut std::ffi::c_void = match window.display {
                 RawDisplayHandle::Xlib(display) => display
                     .display
                     .map_or(std::ptr::null_mut(), |value| value.as_ptr().cast()),
@@ -1880,7 +1880,7 @@ fn create_window_surface(
             unsafe { loader.create_xlib_surface(&info, None) }.map_err(convert::map_vk)
         }
         RawWindowHandle::Xcb(handle) => {
-            let connection = match window.display {
+            let connection: *mut std::ffi::c_void = match window.display {
                 RawDisplayHandle::Xcb(display) => display
                     .connection
                     .map_or(std::ptr::null_mut(), |value| value.as_ptr().cast()),
@@ -1899,7 +1899,7 @@ fn create_window_surface(
             unsafe { loader.create_xcb_surface(&info, None) }.map_err(convert::map_vk)
         }
         RawWindowHandle::Wayland(handle) => {
-            let display = match window.display {
+            let display: *mut std::ffi::c_void = match window.display {
                 RawDisplayHandle::Wayland(display) => display.display.as_ptr().cast(),
                 _ => return Err(RhiError::Surface("wayland display is missing".into())),
             };
