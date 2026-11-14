@@ -32,7 +32,12 @@ highlight = "all"
 [advisories]
 version = 2
 yanked = "warn"
-ignore = []
+ignore = [
+  # RUSTSEC-2026-0192: ttf-parser не поддерживается. Тянется только dev-путём
+  # winit -> sctk-adwaita -> ab_glyph; в рантайме движка не используется,
+  # безопасного обновления пока нет. Пересмотреть при обновлении winit.
+  "RUSTSEC-2026-0192",
+]
 
 [sources]
 unknown-registry = "deny"
