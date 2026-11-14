@@ -4,6 +4,28 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.1] - 2026-11-14
+
+### Fixes
+
+#### graphics
+
+- staging-контракт по usage-флагам на Vulkan ([70eed5b](https://github.com/PaoloFernetti/fluxengine/commit/70eed5b8d7a42185cab1ea67d009589db1339003))
+
+### Documentation
+
+#### roadmap
+
+- перенести невыполненные чекбоксы на места реализации ([fbe672c](https://github.com/PaoloFernetti/fluxengine/commit/fbe672cc0f73708ccdf68d6d821bffd0323bf9c6))
+- встроить долги этапов 1–4 в единый план работ ([306efbe](https://github.com/PaoloFernetti/fluxengine/commit/306efbe531a90c39ac301b6898d2a90b0ac30e5a))
+
+### Internal
+
+#### ci-cd
+
+- аннотировать падение PSO-смоука на lavapipe ([26cba3d](https://github.com/PaoloFernetti/fluxengine/commit/26cba3d972047c19b379c6a9cb06edd3a0fcf6ed))
+- job lavapipe с обязательным Vulkan-устройством ([18d1249](https://github.com/PaoloFernetti/fluxengine/commit/18d12490955e194b88c431ff6c9cf86164906baa))
+
 ## [0.4.0] - 2026-11-14
 
 ### Features
