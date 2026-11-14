@@ -4,6 +4,14 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] - 2026-11-14
+
+### Features
+
+#### graphics
+
+- поверхности VkSurfaceKHR и present-swapchain ([7778c44](https://github.com/PaoloFernetti/fluxengine/commit/7778c445bbc10d86fbc057e2130d029fc08aa6ed))
+
 ## [0.5.0] - 2026-11-14
 
 ### Features
