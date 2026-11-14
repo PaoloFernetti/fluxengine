@@ -548,8 +548,9 @@ deadzone не теряет диапазон (rescale); rebinding roundtrip че�
 - [x] Instance/device/queues, cmd-буферы, барьеры, offscreen swapchain
 - [x] Validation layers в тестах, чистый лог
 - [x] Headless: offscreen PresentTarget (clear-color кадр)
-- [ ] lavapipe в CI (конфиг раннера) — первый шаг: без реального устройства
-      GPU-пункты ниже нечем проверить
+- [x] lavapipe в CI — job `vulkan-lavapipe` (`mesa-vulkan-drivers`,
+      `FLUX_REQUIRE_VULKAN=1`): RHI-юниты и PSO-смоук без права на skip;
+      job входит в `sync-master`
 - [ ] Окно/`VkSurfaceKHR` + `VkSwapchainKHR` (present-проход — I4)
 - [ ] PSO-кэш (SPIR-V и layout-описания — I5, ADR-0034) — после lavapipe:
       приёмка «0 `vkCreate*Pipelines`» требует повторного запуска на GPU

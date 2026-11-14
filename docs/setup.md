@@ -37,6 +37,8 @@ cargo test --workspace
 - С DX12: `cargo build -p flux-graphics --features dx12` (требует Windows SDK).
 - Headless-тесты рендера (lavapipe) — отдельный профиль CI; локально:
   установить Mesa lavapipe и запустить `cargo test -p flux-graphics --features vulkan`.
+  С `FLUX_REQUIRE_VULKAN=1` отсутствие устройства становится ошибкой, а не
+  пропуском теста.
 
 ## 3. Запуск
 

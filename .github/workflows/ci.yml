@@ -103,6 +103,40 @@ jobs:
       - name: docs.html must be committed and up to date
         run: git diff --exit-code -- docs.html
 
+  vulkan-lavapipe:
+    name: Vulkan on lavapipe (software GPU)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: vulkan
+
+      - name: Install Mesa lavapipe
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1 vulkan-tools
+
+      - name: Verify software Vulkan device
+        run: |
+          vulkaninfo --summary
+          vulkaninfo --summary | grep -Eqi 'lavapipe|llvmpipe'
+
+      - name: Vulkan RHI unit tests (device required)
+        env:
+          FLUX_REQUIRE_VULKAN: "1"
+        run: cargo test -p flux-graphics --features vulkan --lib
+
+      - name: Vulkan PSO smoke (device required)
+        env:
+          FLUX_REQUIRE_VULKAN: "1"
+        run: cargo test -p flux-graphics --features vulkan --test vulkan_pso
+
   release-check:
     name: conventional commits (flux-release)
     if: github.event_name == 'pull_request'
@@ -161,15 +195,17 @@ jobs:
 
   sync-master:
     name: fast-forward master from dev
-    needs: [rust, licenses, docs, release]
+    needs: [rust, licenses, docs, vulkan-lavapipe, release]
     # Выполняется и для release-коммитов (job release там пропускается), чтобы
     # master получал уже выпущенную версию. Красный CI в master не мержим.
+    # lavapipe — часть G4: без реального GPU-прогона master не обновляется.
     if: |
       always() && !cancelled() &&
       github.ref == 'refs/heads/dev' &&
       needs.rust.result == 'success' &&
       needs.licenses.result == 'success' &&
       needs.docs.result == 'success' &&
+      needs.vulkan-lavapipe.result == 'success' &&
       (needs.release.result == 'success' || needs.release.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
@@ -189,7 +225,7 @@ jobs:
 
   report-failure:
     name: issue on dev failure
-    needs: [rust, licenses, docs, release, sync-master]
+    needs: [rust, licenses, docs, vulkan-lavapipe, release, sync-master]
     if: failure() && github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
     permissions:

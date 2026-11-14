@@ -14,13 +14,17 @@
    (per-runner baseline; изменение без `visual_change` — красный)
 6. Shader-артефакты и PSO: `cargo test -p flux-graphics --features vulkan
    --test vulkan_pso` — закоммиченные SPIR-V валидны на любом раннере;
-   реальный PSO-кадр с draw выполняется при наличии Vulkan-устройства и
-   пропускается на headless-раннере. Перекомпиляция HLSL требует DXC
-   (`tools/flux-assetc shader --check`) и в PR-гейт не входит.
+   реальный PSO-кадр с draw выполняется при наличии Vulkan-устройства.
+   На headless-раннере тест пропускается, но только без
+   `FLUX_REQUIRE_VULKAN=1`: с этой переменной отсутствие устройства — паника.
+   Перекомпиляция HLSL требует DXC (`tools/flux-assetc shader --check`) и в
+   PR-гейт не входит.
 7. Линтер зависимостей: lib-крейты не тянут winit/ash/gilrs (headless-правило)
 8. Линтер лицензий зависимостей (cargo-deny, allowlist — см. legal.md)
 9. ADR-чек: изменение контрактов/форматов/канона без ADR — красный
-10. Headless-рендер smoke (lavapipe) при затронутом flux-graphics
+10. Job `vulkan-lavapipe` (ubuntu, Mesa lavapipe): RHI-юниты и PSO-смоук с
+    `FLUX_REQUIRE_VULKAN=1` — устройство обязательно, skip запрещён. Job
+    входит в `sync-master`, поэтому red блокирует fast-forward `master`.
 11. Determinism smoke (`node tools/ci/determinism-smoke.mjs`): same-binary,
     10k тиков, два прогона → один хеш; при затронутых симуляционных крейтах
 12. Conventional Commits:
@@ -65,7 +69,7 @@ fast-forward-мержем из `dev` после зелёных тестов и �
 | Параметр | Значение |
 |---|---|
 | Require a pull request before merging | нет: в `master` пушит только `github-actions[bot]`; люди работают через PR в `dev` |
-| Require status checks to pass | `fmt + clippy + test + build (CPU-only)`, `cargo-deny (licenses, advisories)`, `conventional commits (flux-release)`, `docs links + SPA build` |
+| Require status checks to pass | `fmt + clippy + test + build (CPU-only)`, `cargo-deny (licenses, advisories)`, `Vulkan on lavapipe (software GPU)`, `conventional commits (flux-release)`, `docs links + SPA build` |
 | Require branches to be up to date | да |
 | Do not allow force pushes | да |
 | Do not allow deletions | да |
@@ -78,6 +82,7 @@ gh api -X PUT "repos/PaoloFernetti/fluxengine/branches/master/protection" \
   -F required_status_checks.strict=true \
   -F 'required_status_checks.contexts[]=fmt + clippy + test + build (CPU-only)' \
   -F 'required_status_checks.contexts[]=cargo-deny (licenses, advisories)' \
+  -F 'required_status_checks.contexts[]=Vulkan on lavapipe (software GPU)' \
   -F 'required_status_checks.contexts[]=conventional commits (flux-release)' \
   -F 'required_status_checks.contexts[]=docs links + SPA build' \
   -F enforce_admins=false \

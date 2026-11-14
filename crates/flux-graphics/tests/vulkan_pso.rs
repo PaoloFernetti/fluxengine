@@ -20,7 +20,18 @@ const SOLID_FS: &[u8] = include_bytes!("../shaders/compiled/solid.frag.spv");
 const COLOR_FORMATS: &[TextureFormat] = &[TextureFormat::Rgba8Srgb];
 
 fn runtime_device() -> Option<VulkanDevice> {
-    VulkanDevice::new().ok()
+    match VulkanDevice::new() {
+        Ok(device) => Some(device),
+        Err(error) => {
+            // На GPU-раннере отсутствие устройства — ошибка, а не skip:
+            // иначе lavapipe-job зелёный, ничего не проверив.
+            if std::env::var_os("FLUX_REQUIRE_VULKAN").is_some() {
+                panic!("FLUX_REQUIRE_VULKAN is set, but Vulkan is unavailable: {error}");
+            }
+            eprintln!("skipping Vulkan test: {error}");
+            None
+        }
+    }
 }
 
 fn spirv_magic(bytes: &[u8]) -> u32 {

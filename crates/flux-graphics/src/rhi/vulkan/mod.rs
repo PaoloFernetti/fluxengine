@@ -1751,6 +1751,10 @@ mod tests {
         match VulkanDevice::new() {
             Ok(device) => Some(device),
             Err(error) => {
+                // На GPU-раннере отсутствие устройства — ошибка, а не skip.
+                if std::env::var_os("FLUX_REQUIRE_VULKAN").is_some() {
+                    panic!("FLUX_REQUIRE_VULKAN is set, but Vulkan is unavailable: {error}");
+                }
                 eprintln!("skipping Vulkan test: {error}");
                 None
             }
