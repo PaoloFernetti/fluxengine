@@ -1999,7 +1999,8 @@ ECS, реальный рендер-бэкенд, ассеты, физика, с�
 
 - [x] Entity (index+generation), аллокатор слотов, запрет реюза generation
 - [x] Спавн/деспавн, \`spawn_batch\`
-- [ ] Отложенные операции (\`Commands\`, WP 2.4)
+- [x] Отложенные операции (\`Commands\`, WP 2.4) — \`commands.rs\`:
+      \`CommandTarget::{Existing, Deferred}\`, применение на барьере стадии
 - [x] Карта entity UUID ↔ Entity для сейвов/сети (UUID стабилен на всю жизнь)
 
 **Приёмка**: 1M спавн/деспавн не растят память без предела; generation не
@@ -2308,7 +2309,9 @@ deadzone не теряет диапазон (rescale); rebinding roundtrip че�
 - [x] \`insert_pending\`/\`upload\`/\`submit_batch\` — фиксированная точка кадра
 - [x] ResourceRegistry + bindless: Pending→Ready, прокси-ресурсы
 - [x] Eviction только между кадрами и после fence-ов
-- [ ] Реальные copy-команды \`buffer→image\` (расширение RHI — I3/I5)
+- [x] Реальные copy-команды \`buffer→image\` (ADR-0039): \`copy_buffer_to_image\` /
+      \`copy_image_to_buffer\` в \`CommandBuffer\`, реализация в Vulkan и Null,
+      \`write_buffer\`/\`read_buffer\` для staging-readback
 
 **Приёмка**: планирование загрузки проходит путь ассет→GPU (лизинг, батч,
 ретирмент); eviction не ломает используемые ресурсы; bindless-слоты
@@ -2786,10 +2789,10 @@ UDP-клиентом; DX12 рендерит ту же сцену.
   \`tools/flux-release\` (ADR-0040): Conventional Commits → bump, запись
   \`Cargo.toml\`, changelog, commit и annotated tag; \`--dry-run\`, pre-release,
   fixed/independent, идемпотентность
-- [ ] CI-активация \`flux-release\`: PR-гейт \`check --strict\` и release-job
-  после зелёных test/build на push в \`main\`/\`master\` или по
-  \`workflow_dispatch\` (job-ы добавлены в \`.github/workflows/ci.yml\`,
-  проверка — после первого пуша)
+- [x] CI-активация \`flux-release\`: PR-гейт \`check --strict\` и release-job
+  после зелёных test/build на push в \`dev\` с автоматическим fast-forward
+  \`dev\` → \`master\` (job \`sync-master\`), плюс \`workflow_dispatch\`; подтверждено
+  релизами \`v0.2.0\` и \`v0.2.1\`
 - [ ] Release-манифест: хеши паков, версии форматов
 - [ ] Артефакты: паки, манифест, символы (PDB)
 - [ ] Процедура отката: PATCH-релиз, read-time миграции, полный пак предыдущей версии
@@ -2879,6 +2882,51 @@ Must-требования закрываются гейтами; Should — пр
 - **Точки расширения**: пересмотр при ревизия-чекпоинтах (концы этапов 3 и 5).
 - **Заделы отложенного**: моддинг (ADR-0025), секвенсор (ADR-0026) — не
   реализуются, но контракты не блокируют их появление.
+
+## План закрытия долгов этапов 1–4
+
+Порядок — по зависимостям и цене простоя. WP закрывается одним PR вместе с
+чекбоксами этого файла; ADR-триггеры — до кода.
+
+| WP | Пункты | Работа | Блокер | Критерий приёмки |
+|---|---|---|---|---|
+| D1 | 2.1, 4.3, 7.7 | Актуализация чекбоксов под фактическое состояние кода | — | Roadmap совпадает с кодом; \`docs.html\` пересобран |
+| D2 | 4.6 | ADR «sampler-ы»: \`BindingKind::CombinedImageSampler\`, read-only layout, правила перехода состояний | — | ADR принят, контракт описан в \`docs/api.md\` |
+| D3 | 4.6 | Вертикальный срез: запись G-buffer в storage image → copy → staging-readback на Null и Vulkan | D2 | одинаковый пиксель на обоих бэкендах, validation чистая, тест в CI |
+| D4 | 4.6 | GPU-проходы \`lighting → tonemap → present-stub\` в Render Graph | D3 | GPU-кадр против CPU-эталона, PSNR ≥ 60 дБ, baseline \`cpu-ref\` |
+| D5 | 4.2 | \`VkSurfaceKHR\` + \`VkSwapchainKHR\` + \`present\` (feature \`vulkan\`, raw-window-handle) | D3 | окно с кадром на GPU; resize 10× без утечек |
+| D6 | 3.1, 4.5 | Fullscreen-переходы без потери device; camera-relative в тенях/IBL по мере появления | D5 | переключение режима N раз без потери \`VkDevice\` |
+| D7 | 4.5, 4.8, 4.9 | Query pools по проходам → \`GpuProfiler\` → \`FrameStats\`; рантайм-применение \`SettingsChange\` | D3, D5 | overlay по пассам; смена пресета без рестарта |
+| D8 | 4.2 | \`VkPipelineCache\` + файл на диске + инвалидация по драйверу/SPIR-V | D3 | повторный запуск: 0 \`vkCreate*Pipelines\` |
+| D9 | 1.3, 3.7, 1.4 | Бенчмарки math после фиксации бюджета; input/KCC-счётчики; priority/affinity | бюджеты в этом файле | бюджет + бенч; регрессия > 5% краснит CI |
+| D10 | 3.2 | ADR «минидамп» + \`MiniDumpWriteDump\` в \`flux-platform\` | ADR | дамп с breadcrumbs читается отладчиком |
+| D11 | 1.2, 4.2 | GitHub protection; job lavapipe + baseline-класс \`lavapipe\` | внешнее: права и PAT | прямой push в \`master\` отклонён; lavapipe-golden ≥ 60 дБ |
+| D12 | 4.4, 4.5 | Async compute-очередь и pass-фабрики; пресет \`Quality::Editor\` | D4, D5, этап 7 | overlap виден в таймстемпах; пресет в \`QualityPreset\` |
+
+Правила: D2 и D10 — ADR до кода; D9 не начинается без бюджета; D11 не
+блокирует код, но обязателен для G4.
+
+## План дальнейшей разработки (этапы 5–7)
+
+Вход в этап 5 — G4 зелёный: D3 + D4 + D5 + D11 (реальный кадр, golden на
+lavapipe, validation чистая, leak 0). До этого контент-пайплайн не начинается.
+
+Этап 5 — порядок из «Параллелизм внутри этапов»:
+
+1. 5.1 \`flux-assetc\` → 5.2 контейнер \`.fpf\` → 5.3 runtime-загрузка; 5.9
+   \`flux-build\` v1 ведётся параллельно — его DAG вызывает шаги assetc.
+2. 5.4 partition и стриминг ∥ 5.8 net loopback.
+3. 5.6 Save/Load-дельты (\`FLUSH → FENCE → EVICT\`) после 5.4; 5.7 миграции
+   с golden-сейвами после 5.6.
+4. 5.5 префабы, 5.10 environment, 5.11 PIE → M5 и G5.
+
+Этап 6 — 6.1 physics ∥ 6.3 anim ∥ 6.5 script; 6.6 audio ∥ 6.7 ui;
+6.8 DX12 ∥ 6.9 net UDP; 6.2 KCC полный после 6.1 и 6.9; 6.10 assetc-ступени
+→ M6 и G6.
+
+Этап 7 — 7.1 редактор ∥ 7.4 shipping ∥ 7.5 topology; 7.2 undo после 7.1;
+7.3 отладочная визуализация; 7.6 hardening до 7.7; 7.7 release-манифест,
+артефакты, откат → M7 и G7.
 
 ## Что делать, если гейт не пройден
 
