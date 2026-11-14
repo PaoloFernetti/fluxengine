@@ -6992,6 +6992,23 @@ assert!(device.destroy_pipeline(pipeline));
 Набор не должен быть в полёте: наборы и staging-буферы живут в кольце
 `frames_in_flight`, обновление — на границе acquire (ADR-0039).
 
+#### Сэмплеры и чтение изображений (ADR-0041)
+
+Контракт принят; реализация — WP D3 (RHI-типы и Null), затем Vulkan.
+
+- `SamplerDesc { label, mag_filter, min_filter, mipmap_mode, address_u,
+  address_v, address_w, max_anisotropy, lod_min, lod_max, compare, border }`,
+  `SamplerId`; `RhiDevice::create_sampler` / `destroy_sampler`. Сэмплеры
+  иммутабельны: смена фильтрации — это новый `SamplerId`.
+- `BindingKind::Sampler` (HLSL `sN`) и `BindingKind::CombinedImageSampler`
+  (HLSL `tN`, только для совместимости и рукописного SPIR-V);
+  `DescriptorResource::Sampler(SamplerId)`, `DescriptorWrite::sampler(...)`.
+- Валидация: `Sampler` ↔ `Sampler`; `SampledImage` и `CombinedImageSampler` ↔
+  `Image` с `TextureUsage::sampled()`; `max_anisotropy > 1` требует
+  `Capabilities::supports_sampler_anisotropy`.
+- `ImageState::ShaderRead` — единственное состояние чтения; барьер
+  `→ ShaderRead` вставляет Render Graph перед read-проходом.
+
 ```rust
 let mut device = NullDevice::new();
 let storage = device
