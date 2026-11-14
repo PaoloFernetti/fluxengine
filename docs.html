@@ -2295,9 +2295,11 @@ deadzone не теряет диапазон (rescale); rebinding roundtrip че�
 - [x] Instance/device/queues, cmd-буферы, барьеры, offscreen swapchain
 - [x] Validation layers в тестах, чистый лог
 - [x] Headless: offscreen PresentTarget (clear-color кадр)
-- [ ] PSO-кэш (SPIR-V и layout-описания — I5, ADR-0034)
+- [ ] lavapipe в CI (конфиг раннера) — первый шаг: без реального устройства
+      GPU-пункты ниже нечем проверить
 - [ ] Окно/\`VkSurfaceKHR\` + \`VkSwapchainKHR\` (present-проход — I4)
-- [ ] lavapipe в CI (конфиг раннера)
+- [ ] PSO-кэш (SPIR-V и layout-описания — I5, ADR-0034) — после lavapipe:
+      приёмка «0 \`vkCreate*Pipelines\`» требует повторного запуска на GPU
 
 **Приёмка**: clear-color headless-кадр; validation без ошибок; leak-трекинг
 «выделено N — освобождено N». Оконный кадр — критерий I3 (surface требует
@@ -2332,11 +2334,11 @@ deadzone не теряет диапазон (rescale); rebinding roundtrip че�
 - [x] RenderScene: SoA-снапшот ECS-кадра + alpha интерполяции
 - [x] Camera-relative f32 + Reversed-Z (view/projection)
 - [ ] Пайплайн: culling → G-buffer → deferred lighting → UI-stub → present
-- [ ] FrameStats: фреймтайм по пассам
-- [ ] Camera-relative на всех проходах (тени/IBL/скайбокс — I5)
+      (после GPU-проходов 4.6 и present 4.2)
 
 **Приёмка**: extract ≤ 1 мс на эталонной сцене (замер — I8, golden/G4); камера
-не теряет точность на дистанции; тени/IBL/скайбокс camera-relative — после I5.
+не теряет точность на дистанции. FrameStats по пассам — в 4.9, camera-relative
+в тенях/IBL/скайбоксе — в 4.6: там появятся сами проходы.
 
 ### 4.6 PBR и G-buffer
 
@@ -2352,13 +2354,13 @@ deadzone не теряет диапазон (rescale); rebinding roundtrip че�
       копирование buffer↔image и staging-readback (ADR-0039)
 - [ ] GPU-проходы G-buffer → lighting → tonemap → bloom/TAA/SSAO: sampler-ADR
       принят (ADR-0041) и реализован в RHI; Null-эмуляция содержимого и срез
-      clear → copy → readback закрыты — проходы ждут lavapipe в CI
-      (см. «Единый план работ»)
+      clear → copy → readback закрыты — проходы ждут lavapipe в CI (4.2)
+- [ ] Camera-relative в тенях/IBL/скайбоксе (после появления этих проходов)
 
 **Приёмка**: ABI G-buffer и PBR/tonemap/post-формулы зафиксированы и покрыты
 тестами; Vulkan собирает PSO из SPIR-V; clearcoat добавляется keyword-ом без
 изменения layout. Срез clear → copy → readback проверяется на Null в CI;
-GPU-проходы и PSNR-эталон — после появления lavapipe в CI («Единый план работ»).
+GPU-проходы и PSNR-эталон — после появления lavapipe в CI (4.2).
 
 ### 4.7 Шейдерные пермутации
 
@@ -2398,6 +2400,7 @@ GPU-проходы и PSNR-эталон — после появления lavapi
       \`read_buffer\`, ADR-0039) — основа реальных golden-кадров
 - [x] Golden-политика: Null — bit-exact, GPU — допуск (per-pixel diff и доля
       выбросов); побитовое равенство между драйверами не требуется
+- [ ] FrameStats: фреймтайм по пассам (query pools в реальных проходах)
 - [ ] Запись зон из GPU-проходов (после GPU-проходов G-buffer/lighting)
 
 **Приёмка**: изменение пикселя без visual-change PR краснит гейт; дифф
@@ -2885,66 +2888,6 @@ Must-требования закрываются гейтами; Should — пр
 - **Заделы отложенного**: моддинг (ADR-0025), секвенсор (ADR-0026) — не
   реализуются, но контракты не блокируют их появление.
 
-## Единый план работ (этапы 4–7)
-
-Очередь одна: пункт стоит там, где его можно реализовать и проверить. Долги
-этапов 1–4 не вынесены в отдельную таблицу — они встроены в очередь на своих
-местах; метки \`D…\` сохранены только для ссылок в истории коммитов.
-
-Сделано в текущей итерации: чекбоксы 2.1/4.3/7.7 актуализированы; принят
-[ADR-0041](adr/0041-samplers-and-image-reads.md) и реализованы сэмплеры в RHI
-(Null + Vulkan); Null-эмуляция содержимого и срез \`clear → copy → readback\`
-проверяются в CI (v0.4.0).
-
-### Закрытие этапа 4 (до G4)
-
-1. **lavapipe в CI** (4.2) — job на \`ubuntu-latest\` с \`mesa-vulkan-drivers\`,
-   \`FLUX_REQUIRE_VULKAN=1\` (без него PSO-смоук молча пропускается). Первым:
-   без реального устройства GPU-пункты ниже нечем проверить.
-2. **GPU-проходы** (4.6) — G-buffer → lighting → tonemap → bloom/TAA/SSAO +
-   present-stub; кадр против CPU-эталона, PSNR ≥ 60 дБ, baseline \`lavapipe\`.
-3. **Окно и present** (4.2) — \`VkSurfaceKHR\` + \`VkSwapchainKHR\` через
-   raw-window-handle, \`resize\` 10× без утечек; затем PSO-кэш
-   (\`VkPipelineCache\` + диск, инвалидация по драйверу/SPIR-V) с приёмкой
-   «0 \`vkCreate*Pipelines\` на повторном запуске».
-4. **Профиль по пассам** (4.5, 4.9) — query pools в реальных проходах →
-   \`GpuProfiler\` → \`FrameStats\`; запись зон из G-buffer/lighting.
-5. **Рантайм-настройки** (4.8) — \`SettingsChange\` применяется к swapchain,
-   графу и пермутациям без рестарта (после present).
-6. **Camera-relative в тенях/IBL** (4.5) — по мере появления этих проходов;
-   fullscreen-переходы без потери \`VkDevice\` (3.1).
-7. **Async compute и pass-фабрики** (4.4) — после GPU-проходов и present:
-   overlap виден в таймстемпах.
-8. **Бенчмарки** (1.3, 3.7, 1.4) — math после фиксации бюджета, input/KCC
-   счётчики, priority/affinity; регрессия > 5% краснит CI.
-9. **Минидамп** (3.2) — ADR до кода, затем \`MiniDumpWriteDump\` с breadcrumbs;
-   от GPU не зависит, поэтому после бенчмарков.
-10. **GitHub protection** — внешнее действие (права/PAT), выполняется к G4;
-    сейчас \`protection.enabled = false\`.
-
-Вход в этап 5 — G4 зелёный: реальный кадр, golden на lavapipe, validation
-чистая, leak 0. До этого контент-пайплайн не начинается.
-
-### Этап 5 — контент, стриминг, сеть
-
-1. 5.1 \`flux-assetc\` → 5.2 контейнер \`.fpf\` → 5.3 runtime-загрузка; 5.9
-   \`flux-build\` v1 ведётся параллельно — его DAG вызывает шаги assetc.
-2. 5.4 partition и стриминг ∥ 5.8 net loopback.
-3. 5.6 Save/Load-дельты (\`FLUSH → FENCE → EVICT\`) после 5.4; 5.7 миграции
-   с golden-сейвами после 5.6.
-4. 5.5 префабы, 5.10 environment, 5.11 PIE → M5 и G5.
-
-### Этап 6 — подсистемы
-
-6.1 physics ∥ 6.3 anim ∥ 6.5 script; 6.6 audio ∥ 6.7 ui; 6.8 DX12 ∥ 6.9 net
-UDP; 6.2 KCC полный после 6.1 и 6.9; 6.10 assetc-ступени → M6 и G6.
-
-### Этап 7 — редактор, shipping, hardening
-
-7.1 редактор ∥ 7.4 shipping ∥ 7.5 topology (включая \`Quality::Editor\` в 7.1);
-7.2 undo после 7.1; 7.3 отладочная визуализация; 7.6 hardening до 7.7;
-7.7 release-манифест, артефакты, откат → M7 и G7.
-
 ## Что делать, если гейт не пройден
 
 | Гейт | Действие |
@@ -3119,8 +3062,8 @@ undo × PIE × стриминг (flux-editor), golden-сейвы, virtual textur
   исполняются), поэтому GPU-эталон остаётся на Vulkan. Решения ADR-0039/0041
   не меняются.
 - Метки \`D…\` внутри ADR-0041 (\`D3\`, \`D8\`) — исторические обозначения работ
-  этапа 4; отдельной таблицы долгов больше нет, актуальный порядок — «Единый
-  план работ» в [Roadmap.md](../Roadmap.md). Формулировки ADR не переписываются.
+  этапа 4; отдельной таблицы долгов больше нет, актуальный порядок — чекбоксы
+  этапов 4–7 в [Roadmap.md](../Roadmap.md). Формулировки ADR не переписываются.
 - Правило: индекс отражает актуальные числа/этапы; формулировки решений в
   ADR-файлах не переписываются, расхождение оформляется как уточнение здесь.
 
