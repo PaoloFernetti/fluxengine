@@ -45,6 +45,7 @@
 | 4 | I9b | поверхности (`VkSurfaceKHR`) и present-swapchain (`VkSwapchainKHR`): `SurfaceTarget`/`WindowSurface`, headless WSI, `Swapchain::image_count` |
 | 4 | I9c | GPU-проходы кадра: push constants, `RenderGraph::execute_with`/`compile_with_initial`, `render::frame::GpuFrame` (G-buffer → SSAO → lighting → bloom → tonemap → TAA), CPU-эталоны и PSNR-гейт (ADR-0042) |
 | 4 | I9d | FrameStats по пассам: timestamp-пары в `GpuFrame` (`zones`, `pass_duration_ns`, `frame_duration_ns`), `FRAME_QUERY_COUNT`/`FRAME_PASS_NAMES` (ADR-0037 + ADR-0042) |
+| — | tool | `tools/flux-assetc unitypackage`: gzip/tar → дерево `Assets/`, meta рядом, защита от traversal, `--no-meta`/`--overwrite`/`--dry-run` (ADR-0043) |
 | — | release | `tools/flux-release`: Conventional Commits → semver, версия `Cargo.toml`, `CHANGELOG.md`, commit/annotated tag; pre-release, монорепо fixed/independent, opt-in publish/gh/semver-checks (ADR-0040) |
 
 ## Общие конвенции
@@ -10346,6 +10347,14 @@ https и ssh remote.
   `FRAME_PASS_NAMES` фиксирует порядок. Null — детерминированные значения,
   Vulkan — реальные GPU-таймстемпы; `tests/vulkan_frame.rs` и Null-тест
   проверяют состав зон.
+- **flux-assetc unitypackage (ADR-0043)**: `ExtractOptions`
+  (`output`/`keep_meta`/`overwrite`/`dry_run`), `ExtractReport`
+  (`assets`/`folders`/`skipped`/`bytes`/`paths`) и
+  `extract(archive, options)`; gzip/tar распаковываются в staging, `pathname`
+  нормализуется и проверяется (`UnsafePath`, `MissingPathname`), `asset`
+  копируется в `output/<pathname>`, `asset.meta` — в `<pathname>.meta`,
+  папки определяются по `/` или `folderAsset: yes`. CLI:
+  `--no-meta`, `--overwrite`, `--dry-run`.
 - **Инструменты (ADR-0040)**: `tools/flux-release` — CLI `release`/`version`/
   `changelog`/`check`/`init`/`doctor`; `Options`, `ReleaseConfig`
   (fixed/independent, en/ru, `commit_types`, skip-маркеры, внешний шаблон),

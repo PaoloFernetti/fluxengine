@@ -734,6 +734,9 @@ DX12, GI/ray tracing, meshlets, virtual textures, DLSS.
 
 ### 5.1 tools/flux-assetc
 
+- [x] Импорт `.unitypackage` (внеочередное): `flux-assetc unitypackage` —
+      gzip/tar → дерево `Assets/`, meta рядом, защита от path traversal,
+      `--no-meta`/`--overwrite`/`--dry-run` (ADR-0043)
 - [ ] Меши: перс-атрибутное кодирование, LOD0–3, bounding volumes, скиннинг
 - [ ] Текстуры → KTX2 (BC1/3/5/7/4, mips), звук → Opus
 - [ ] Анимационные клипы: квантованные кейфреймы, дедупликация

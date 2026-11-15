@@ -30,3 +30,31 @@ DXC распространяется под LLVM Release License (NCSA) и ра�
 build-time зависимость; `dxil.dll` берётся только из официального SDK/NuGet.
 Бинарники не коммитятся — см. [tools/dxc/README.md](../dxc/README.md) и
 ADR-0038.
+
+## Импорт `.unitypackage` (ADR-0043)
+
+```text
+flux-assetc unitypackage pack.unitypackage --out imported \
+  [--no-meta] [--overwrite] [--dry-run]
+```
+
+Пакет — gzip-сжатый tar с каталогами GUID: `pathname` (исходный путь),
+`asset` (содержимое), `asset.meta` (Unity-meta), опционально `preview.png`.
+Инструмент распаковывает архив во временный staging, читает `pathname` и
+восстанавливает дерево:
+
+```text
+imported/Assets/Textures/rock.png
+imported/Assets/Textures/rock.png.meta
+imported/Assets/Textures/Folder/        # folderAsset: yes или путь с "/"
+```
+
+- `--no-meta` — не писать `<asset>.meta`;
+- `--overwrite` — перезаписывать существующие файлы (по умолчанию пропуск);
+- `--dry-run` — только показать пути и итог, `--out` не меняется.
+
+`pathname` считается недоверенным: абсолютные пути, `..`, `.`, префиксы
+дисков и пустые компоненты отвергаются (`UnsafePath`), выход за пределы
+`--out` невозможен. GUID-каталоги обходятся в сортированном порядке, поэтому
+результат детерминирован. `preview.png` не извлекается, форматы Unity
+(`.prefab`, `.mat`) не конвертируются — это задача контент-пайплайна 5.1.

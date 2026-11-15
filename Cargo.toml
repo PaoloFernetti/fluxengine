@@ -61,6 +61,10 @@ toml_edit = { version = "0.22", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 tempfile = "3"
 
+# Импорт .unitypackage (ADR-0043): gzip + tar, только build-time инструмент.
+flate2 = "1"
+tar = "0.4"
+
 # Dev-only этапа 2 (ADR-0029)
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 proptest = "1"

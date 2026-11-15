@@ -76,7 +76,7 @@ flowchart LR
 - Каждый термин из ADR обязан иметь запись в глоссарии канона
   (правило «термин имеет владельца»).
 
-## Индекс (ADR-0001…0027 — архитектурная фаза; 0028…0030 — этап 2; 0031…0033 — этап 3; 0034…0042 — этап 4)
+## Индекс (ADR-0001…0027 — архитектурная фаза; 0028…0030 — этап 2; 0031…0033 — этап 3; 0034…0043 — этап 4/инструменты)
 
 | ADR | Решение | Источник |
 |---|---|---|
@@ -122,6 +122,7 @@ flowchart LR
 | 0040 | `flux-release`: Conventional Commits → semver, CHANGELOG, Cargo.toml, commit/tag; publish и GitHub Release opt-in | tools/flux-release |
 | 0041 | Сэмплеры: раздельные `SampledImage` + `Sampler` (DXC/SPIR-V и DX12), combined — только совместимость; `ShaderRead` как единственное состояние чтения | flux-graphics |
 | 0042 | GPU-проходы кадра: push constants 64 B, `execute_with`/`compile_with_initial`, G-buffer → SSAO → lighting → bloom → tonemap → TAA, PSNR-эталон от readback предыдущего прохода | flux-graphics |
+| 0043 | `.unitypackage` в flux-assetc: gzip/tar (`flate2`, `tar`), staging, `pathname` → дерево `Assets/`, meta рядом, защита от traversal | tools/flux-assetc |
 
 Дополнительные решения, зафиксированные в плане, но не требующие отдельных
 ADR-файлов (частично покрыты выше): input abstraction (flux-platform),
@@ -163,6 +164,9 @@ undo × PIE × стриминг (flux-editor), golden-сейвы, virtual textur
   реальными проходами кадра, push constants дополняют дескрипторные наборы
   (а не заменяют uniform-буферы как общий механизм). Формулировки ADR-0039
   и ADR-0041 не переписываются.
+- ADR-0043 принимает `flate2` и `tar` только для build-time инструмента
+  `tools/flux-assetc`; в рантайм-крейты они не попадают, лицензии уже в
+  allowlist `deny.toml`.
 - FrameStats по пассам добавлен поверх ADR-0042 без нового ADR: `GpuFrame`
   использует query pools из ADR-0037 и отдаёт `GpuZone` через `zones()`,
   `pass_duration_ns()`, `frame_duration_ns()`; цепочка проходов и их форматы
