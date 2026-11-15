@@ -4,6 +4,14 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.17.0] - 2026-11-15
+
+### Features
+
+#### graphics
+
+- UI-stub и present в образ swapchain (4.5, ADR-0048) ([fd7b913](https://github.com/PaoloFernetti/fluxengine/commit/fd7b91349e5f07b19ced36d1f1e4de38a29a2186))
+
 ## [0.16.0] - 2026-11-15
 
 ### Features
