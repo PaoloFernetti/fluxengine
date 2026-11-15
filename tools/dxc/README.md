@@ -7,12 +7,16 @@
 
 ## Быстрая установка (локально и в CI)
 
-Версия закреплена в [`fetch.mjs`](fetch.mjs) (`v1.9.2609`), архивы проверяются
-по SHA-256; повторный запуск идемпотентен:
+По умолчанию [`fetch.mjs`](fetch.mjs) ставит **последний** релиз
+DirectXShaderCompiler (GitHub API `releases/latest`) и обновляет установку при
+выходе новой версии. Целостность — SHA-256 из `digest` ассета GitHub (если он
+не опубликован, хэш сохраняется в `bin/.dxc-release.json`). Повторный запуск
+идемпотентен:
 
 ```text
-node tools/dxc/fetch.mjs          # скачать, если ещё нет, и проверить dxc --version
-node tools/dxc/fetch.mjs --force  # перекачать
+node tools/dxc/fetch.mjs                     # последний релиз
+node tools/dxc/fetch.mjs --version v1.9.2609 # закрепить версию
+node tools/dxc/fetch.mjs --force             # перекачать
 ```
 
 - Windows: `tools/dxc/bin/{dxc.exe,dxcompiler.dll,dxil.dll,dxv.exe}`.

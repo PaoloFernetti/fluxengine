@@ -1,22 +1,25 @@
 #!/usr/bin/env node
 //! Загрузка вендорного DXC (ADR-0038) в `tools/dxc/`.
 //!
-//! Команда идемпотентна и подходит для CI:
+//! По умолчанию ставится **последний** релиз DirectXShaderCompiler
+//! (`releases/latest`); версию можно закрепить. Команда идемпотентна и
+//! подходит для CI:
 //!
 //! ```text
-//! node tools/dxc/fetch.mjs            # скачать, если ещё нет
-//! node tools/dxc/fetch.mjs --force    # перекачать
+//! node tools/dxc/fetch.mjs                  # последний релиз
+//! node tools/dxc/fetch.mjs --version v1.9.2609
+//! node tools/dxc/fetch.mjs --force          # перекачать
 //! ```
 //!
-//! Версия закреплена, архивы проверяются по SHA-256. Windows: zip →
-//! `tools/dxc/bin/{dxc.exe,dxcompiler.dll,dxil.dll}`; Linux: tar.gz →
-//! `tools/dxc/bin/dxc-real` + `libdxcompiler.so|libdxil.so` и генерируемая
-//! обёртка `bin/dxc`, выставляющая `LD_LIBRARY_PATH` (весь каталог `bin/`
-//! уже в ignore, отдельные правила не нужны).
+//! Целостность: SHA-256 из `digest` ассета GitHub; если GitHub его не
+//! опубликовал, хэш считается локально и сохраняется в
+//! `bin/.dxc-release.json`. Windows: zip → `bin/{dxc.exe,dxcompiler.dll,
+//! dxil.dll}`; Linux: tar.gz → `bin/dxc-real` + libs и обёртка `bin/dxc`
+//! с `LD_LIBRARY_PATH` (весь `bin/` уже в ignore).
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, copyFile, mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,44 +27,49 @@ import { fileURLToPath } from "node:url";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const DXC_DIR = join(ROOT, "tools", "dxc");
 const BIN_DIR = join(DXC_DIR, "bin");
-
-/** Закреплённый релиз DXC: версия, ассеты и SHA-256 архивов. */
-const RELEASE = {
-  version: "v1.9.2609",
-  windows: {
-    asset: "dxc_2026_09_29.zip",
-    sha256: "AD31B1FC8443175D204F77A611FDB3EF2EC42759BDC2F1167368DE24A4A7E7F1",
-  },
-  linux: {
-    asset: "linux_dxc_2026_09_28.x86_x64.tar.gz",
-    sha256: "96FAADC7F5C282D2FFDA49804BEB4C3EE38127BC252B723234E3C5CDF7AA39A1",
-  },
-};
+const METADATA = join(BIN_DIR, ".dxc-release.json");
+const API_ROOT = "https://api.github.com/repos/microsoft/DirectXShaderCompiler";
 
 function usage() {
   return [
-    "Использование: node tools/dxc/fetch.mjs [--force]",
+    "Использование: node tools/dxc/fetch.mjs [--version TAG] [--force]",
     "",
-    "  --force   перекачать архивы, даже если DXC уже установлен",
-    `  релиз     ${RELEASE.version} (Windows zip / Linux tar.gz)`,
+    "  --version TAG  закрепить релиз (например, v1.9.2609); по умолчанию — latest",
+    "  --force        перекачать, даже если версия уже установлена",
+    "",
+    "GitHub API без токена ограничен 60 запросами/час; GITHUB_TOKEN поднимает лимит.",
   ].join("\n");
 }
 
-/** Конфигурация ассета для текущей платформы. */
-function platformConfig() {
+function parseArgs(argv) {
+  const options = { force: false, help: false, tag: null };
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index];
+    if (argument === "--force") {
+      options.force = true;
+    } else if (argument === "--help" || argument === "-h") {
+      options.help = true;
+    } else if (argument === "--version") {
+      const value = argv[index + 1];
+      if (!value) {
+        throw new Error("--version требует тег, например v1.9.2609");
+      }
+      options.tag = value.startsWith("v") ? value : `v${value}`;
+      index += 1;
+    } else {
+      throw new Error(`неизвестный аргумент: ${argument}\n\n${usage()}`);
+    }
+  }
+  return options;
+}
+
+/** Исполняемый файл и шаблон ассета для текущей платформы. */
+function platform() {
   if (process.platform === "win32") {
-    return {
-      ...RELEASE.windows,
-      url: `https://github.com/microsoft/DirectXShaderCompiler/releases/download/${RELEASE.version}/${RELEASE.windows.asset}`,
-      executable: "dxc.exe",
-    };
+    return { executable: "dxc.exe", asset: /^dxc_.*\.zip$/i };
   }
   if (process.platform === "linux") {
-    return {
-      ...RELEASE.linux,
-      url: `https://github.com/microsoft/DirectXShaderCompiler/releases/download/${RELEASE.version}/${RELEASE.linux.asset}`,
-      executable: "dxc",
-    };
+    return { executable: "dxc", asset: /^linux_dxc_.*\.(tar\.gz|tgz)$/i };
   }
   throw new Error(
     `платформа ${process.platform} не поддерживается: DXC релизы есть для Windows и Linux (Linux-бинарник запускается в WSL)`,
@@ -88,20 +96,82 @@ async function exists(path) {
   }
 }
 
-async function download(config, destination) {
-  const response = await fetch(config.url);
+async function allExist(paths) {
+  return (await Promise.all(paths.map(exists))).every(Boolean);
+}
+
+async function githubJson(url) {
+  const headers = {
+    Accept: "application/vnd.github+json",
+    "User-Agent": "fluxengine-dxc-fetch",
+  };
+  if (process.env.GITHUB_TOKEN) {
+    headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
+  }
+  const response = await fetch(url, { headers });
   if (!response.ok) {
-    throw new Error(`не удалось скачать ${config.url}: HTTP ${response.status}`);
+    throw new Error(`GitHub API вернул HTTP ${response.status} для ${url}`);
+  }
+  return response.json();
+}
+
+/** Метаданные релиза: тег, ассет, URL и ожидаемый SHA-256 (если опубликован). */
+async function resolveRelease(tag) {
+  const url = tag
+    ? `${API_ROOT}/releases/tags/${encodeURIComponent(tag)}`
+    : `${API_ROOT}/releases/latest`;
+  const release = await githubJson(url);
+  const config = platform();
+  const asset = (release.assets ?? []).find((candidate) => config.asset.test(candidate.name));
+  if (!asset) {
+    throw new Error(`в релизе ${release.tag_name} нет ассета для ${process.platform}`);
+  }
+  const digest =
+    typeof asset.digest === "string" && /^sha256:[0-9a-f]{64}$/i.test(asset.digest)
+      ? asset.digest.slice("sha256:".length).toUpperCase()
+      : null;
+  return { tag: release.tag_name, name: asset.name, url: asset.browser_download_url, sha256: digest };
+}
+
+async function readMetadata() {
+  try {
+    return JSON.parse(await readFile(METADATA, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+async function writeMetadata(release, sha256) {
+  const metadata = {
+    tag: release.tag,
+    asset: release.name,
+    sha256,
+    installedAt: new Date().toISOString(),
+  };
+  await writeFile(METADATA, `${JSON.stringify(metadata, null, 2)}\n`);
+}
+
+/** Скачивает архив, проверяет SHA-256 и возвращает фактический хэш. */
+async function download(release, destination) {
+  const response = await fetch(release.url);
+  if (!response.ok) {
+    throw new Error(`не удалось скачать ${release.url}: HTTP ${response.status}`);
   }
   const bytes = Buffer.from(await response.arrayBuffer());
-  const hash = createHash("sha256").update(bytes).digest("hex").toUpperCase();
-  if (hash !== config.sha256) {
+  const sha256 = createHash("sha256").update(bytes).digest("hex").toUpperCase();
+  if (release.sha256 && sha256 !== release.sha256) {
     throw new Error(
-      `SHA-256 не совпал для ${config.asset}:\n  ожидался ${config.sha256}\n  получен  ${hash}`,
+      `SHA-256 не совпал для ${release.name}:\n  ожидался ${release.sha256}\n  получен  ${sha256}`,
     );
   }
+  if (!release.sha256) {
+    console.warn(`SHA-256 не опубликован GitHub; локальный хэш ${sha256} сохранён в метаданных`);
+  }
   await writeFile(destination, bytes);
-  console.log(`скачано: ${config.asset} (${(bytes.length / (1024 * 1024)).toFixed(1)} МиБ)`);
+  console.log(
+    `скачано: ${release.name} (${(bytes.length / (1024 * 1024)).toFixed(1)} МиБ, ${release.tag})`,
+  );
+  return sha256;
 }
 
 function extract(archive, destination) {
@@ -184,8 +254,8 @@ async function installFiles(extracted) {
   return installed;
 }
 
-/** Запускает `dxc --version`, подставляя каталог библиотек на Linux. */
-function verify(config) {
+/** Возвращает строку `dxc --version`, подставляя каталог библиотек на Linux. */
+function dxcVersion(config) {
   const executable = join(BIN_DIR, config.executable);
   const env = { ...process.env };
   if (process.platform !== "win32") {
@@ -200,34 +270,71 @@ function verify(config) {
       `dxc --version завершился с кодом ${result.status}: ${(result.stderr || result.stdout).trim()}`,
     );
   }
-  console.log(`проверка: ${result.stdout.trim().split("\n")[0]}`);
+  return result.stdout.trim();
+}
+
+function verify(config) {
+  const version = dxcVersion(config);
+  console.log(`проверка: ${version.split("\n")[0]}`);
+}
+
+/**
+ * Установлен ли уже запрошенный релиз.
+ *
+ * Источник истины — `bin/.dxc-release.json`; если его нет (старая установка),
+ * версия сверяется с выводом `dxc --version` и метаданные создаются.
+ */
+async function installedMatches(release, config) {
+  if (!(await allExist(requiredTargets(config.executable)))) {
+    return false;
+  }
+  const metadata = await readMetadata();
+  if (metadata?.tag === release.tag) {
+    return true;
+  }
+  try {
+    const version = dxcVersion(config);
+    if (version.includes(release.tag.replace(/^v/, ""))) {
+      await writeMetadata(release, metadata?.sha256 ?? "");
+      return true;
+    }
+  } catch {
+    // Повреждённая установка: перекачаем.
+  }
+  return false;
 }
 
 async function main() {
-  const args = process.argv.slice(2);
-  if (args.includes("--help") || args.includes("-h")) {
+  const options = parseArgs(process.argv.slice(2));
+  if (options.help) {
     console.log(usage());
     return;
   }
-  const force = args.includes("--force");
-  const unknown = args.filter((argument) => argument !== "--force");
-  if (unknown.length > 0) {
-    throw new Error(`неизвестный аргумент: ${unknown[0]}\n\n${usage()}`);
+
+  const config = platform();
+  let release;
+  try {
+    release = await resolveRelease(options.tag);
+  } catch (error) {
+    // Сеть/GitHub недоступны: если DXC уже стоит, работаем с ним.
+    if (await allExist(requiredTargets(config.executable))) {
+      console.warn(`не удалось получить релиз (${error.message}); использую установленный DXC`);
+      verify(config);
+      return;
+    }
+    throw error;
   }
 
-  const config = platformConfig();
-  const targets = requiredTargets(config.executable);
-  const ready = (await Promise.all(targets.map(exists))).every(Boolean);
-  if (ready && !force) {
-    console.log(`DXC ${RELEASE.version} уже установлен: ${targets[0]}`);
+  if (!options.force && (await installedMatches(release, config))) {
+    console.log(`DXC ${release.tag} уже установлен: ${join(BIN_DIR, config.executable)}`);
     verify(config);
     return;
   }
 
   const staging = await mkdtemp(join(tmpdir(), "flux-dxc-"));
   try {
-    const archive = join(staging, config.asset);
-    await download(config, archive);
+    const archive = join(staging, release.name);
+    const sha256 = await download(release, archive);
     const extracted = join(staging, "unpacked");
     await mkdir(extracted, { recursive: true });
     extract(archive, extracted);
@@ -237,6 +344,7 @@ async function main() {
     }
     console.log(`установлено: ${installed.join(", ")}`);
     verify(config);
+    await writeMetadata(release, sha256);
   } finally {
     await rm(staging, { recursive: true, force: true });
   }
