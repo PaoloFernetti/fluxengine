@@ -130,14 +130,18 @@ gh api -X PUT "repos/PaoloFernetti/fluxengine/branches/dev/protection" \
    остаются для PR, force-push и удаление запрещены.
 2. **Оставить PR-требование и пушить PAT администратора.** Создать
    fine-grained PAT с `Contents: Read and write`, положить в секрет
-   `RELEASE_TOKEN`; в `actions/checkout` указать
-   `token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}`; в protection
-   выключить «Do not allow bypassing the above settings»
-   (`enforce_admins=false`). Тогда push идёт от пользователя-админа, а не от
-   `github-actions[bot]`. В этом репозитории так и настроено: `RELEASE_TOKEN`
-   с fallback на `GITHUB_TOKEN`, он же используется как `GH_TOKEN`.
+   `RELEASE_TOKEN`; в `actions/checkout`/`GH_TOKEN` использовать
+   `secrets.RELEASE_TOKEN || github.token`; в protection выключить
+   «Do not allow bypassing the above settings» (`enforce_admins=false`).
+   Тогда push идёт от пользователя-админа, а не от `github-actions[bot]`.
    PAT-push может запускать workflow повторно; от повторного релиза защищает
    условие job-а по сообщению `chore(release):`.
+   **Важно:** PAT привязан к аккаунту. Если `origin` указывает на форк
+   другого аккаунта, push от имени исходного пользователя получает
+   `403 Permission ... denied` (именно это случилось при переезде на
+   `Kenift/fluxengine`). Поэтому по умолчанию workflow использует встроенный
+   `github.token` и `permissions: contents/issues/pull-requests: write` —
+   схему 1 без PAT.
 3. **Rulesets + GitHub App.** Создать GitHub App с `Contents: write`,
    установить на репозиторий, добавить его в bypass-список ruleset для
    `master` и выпускать installation token через
