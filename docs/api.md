@@ -48,6 +48,7 @@
 | 4 | I9d | FrameStats по пассам: timestamp-пары в `GpuFrame` (`zones`, `pass_duration_ns`, `frame_duration_ns`), `FRAME_QUERY_COUNT`/`FRAME_PASS_NAMES` (ADR-0037 + ADR-0042) |
 | 4 | I9e | Рантайм-применение `GraphicsSettings`: `FrameFeatures`, `SettingsRuntime`, feature-aware граф кадра, `render_scale` в `graph` (ADR-0044) |
 | 4 | I9f | Образы swapchain как `ImageId`: `Swapchain::image`/`acquired_image`, владение цепочкой, переходы `acquire`/`present` (ADR-0045) |
+| 4 | I9g | Копирование buffer→buffer: `copy_buffer_to_buffer`, upload staging → device-local storage, барьер `TRANSFER_WRITE → SHADER_READ` (ADR-0046) |
 | — | tool | `tools/flux-assetc unitypackage`: gzip/tar → дерево `Assets/`, meta рядом, защита от traversal, `--no-meta`/`--overwrite`/`--dry-run` (ADR-0043) |
 | — | release | `tools/flux-release`: Conventional Commits → semver, версия `Cargo.toml`, `CHANGELOG.md`, commit/annotated tag; pre-release, монорепо fixed/independent, opt-in publish/gh/semver-checks (ADR-0040) |
 
@@ -7598,8 +7599,42 @@ assert_eq!(cmd.push_constants_bytes(), &[0u8; 64]);
 Приёмник обязан быть staging-буфером; внутри render pass — `Validation`.
 Вызов — только внутри copy-узла Render Graph (ADR-0039).
 
+#### `CommandBuffer::copy_buffer_to_buffer(&mut self, src, dst, size) -> Result<(), RhiError>`
+
+Копирует `size` байт между буферами (ADR-0046): `src` — `transfer_src`,
+`dst` — `transfer_dst`; нулевой размер и выход за границы — `Validation`.
+Так staging-буфер с host-данными загружается в device-local storage-буфер,
+который читает vertex pulling; внутри render pass — `Validation`. Vulkan
+добавляет барьер `TRANSFER_WRITE → SHADER_READ | VERTEX_ATTRIBUTE_READ`.
+
+```rust
+let mut device = NullDevice::new();
+let staging = device
+    .create_buffer(&GpuBufferDesc::new("upload", 16, BufferUsage::staging()))
+    .unwrap();
+let storage = device
+    .create_buffer(&GpuBufferDesc::new(
+        "vertices",
+        16,
+        BufferUsage {
+            storage: true,
+            transfer_src: true,
+            transfer_dst: true,
+            ..BufferUsage::none()
+        },
+    ))
+    .unwrap();
+device.write_buffer(staging, 0, &[1, 2, 3, 4]).unwrap();
+let mut cmd = device.create_command_buffer().unwrap();
+cmd.begin().unwrap();
+cmd.copy_buffer_to_buffer(staging, storage, 4).unwrap();
+cmd.end().unwrap();
+cmd.finish().unwrap();
+```
+
 Null-бэкенд эмулирует содержимое: копии переносят байты между памятью буфера
-и изображения (этап 4), поэтому срез «clear → copy → readback» проверяется в CI
+и изображения (этап 4) и между буферами (ADR-0046), поэтому срез
+«clear → copy → readback» и «upload → copy → readback» проверяются в CI
 без GPU. Vulkan выполняет реальные `vkCmdCopy*`; на обоих бэкендах результат
 побайтово совпадает для форматов из `TextureFormat`.
 
@@ -10480,6 +10515,14 @@ https и ssh remote.
   вызывает `queue_present`; Vulkan инвалидирует framebuffer-кэш при
   пересоздании образов. Null — тест `swapchain_image_is_renderable_and_readable`
   (clear → copy → readback), Vulkan — `acquired_swapchain_image_is_a_render_target`.
+- **I9g (этап 4, ADR-0046)**: копирование buffer→buffer —
+  `CommandBuffer::copy_buffer_to_buffer(src, dst, size)`; `src` обязан быть
+  `transfer_src`, `dst` — `transfer_dst`, размер проверяется по обоим
+  буферам. Vulkan — `vkCmdCopyBuffer` + `MemoryBarrier`
+  `TRANSFER_WRITE → SHADER_READ | VERTEX_ATTRIBUTE_READ`, Null — перенос байт
+  в `NullMemory`. Host-visible остаются только staging-буферы (ADR-0039).
+  Тесты: Null `buffer_copy_uploads_storage_and_reads_back`, Vulkan — тот же
+  срез в `tests/vulkan_pso.rs`.
 - **flux-assetc unitypackage (ADR-0043)**: `ExtractOptions`
   (`output`/`keep_meta`/`overwrite`/`dry_run`), `ExtractReport`
   (`assets`/`folders`/`skipped`/`bytes`/`paths`) и

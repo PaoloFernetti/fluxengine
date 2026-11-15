@@ -250,6 +250,67 @@ fn buffer_roundtrip_and_descriptor_set() {
 }
 
 #[test]
+fn buffer_copy_uploads_storage_and_reads_back() {
+    let Some(mut device) = runtime_device() else {
+        return;
+    };
+    let before = device.validation_errors();
+
+    let staging = device
+        .create_buffer(&GpuBufferDesc::new("copy-src", 16, BufferUsage::staging()))
+        .unwrap();
+    // Upload-приёмник: storage-буфер читается vertex pulling-ом, поэтому
+    // кроме storage ему нужны transfer-флаги (ADR-0046).
+    let storage = device
+        .create_buffer(&GpuBufferDesc::new(
+            "copy-dst",
+            16,
+            BufferUsage {
+                storage: true,
+                transfer_src: true,
+                transfer_dst: true,
+                ..BufferUsage::none()
+            },
+        ))
+        .unwrap();
+    device
+        .write_buffer(staging, 0, &[9, 8, 7, 6, 5, 4, 3, 2])
+        .unwrap();
+
+    let mut commands = device.create_command_buffer().unwrap();
+    commands.begin().unwrap();
+    commands.copy_buffer_to_buffer(staging, storage, 8).unwrap();
+    // Контракт: нулевой размер и выход за границы — типизированные ошибки.
+    assert!(commands.copy_buffer_to_buffer(staging, storage, 0).is_err());
+    assert!(commands
+        .copy_buffer_to_buffer(staging, storage, 64)
+        .is_err());
+    commands.end().unwrap();
+    commands.finish().unwrap();
+    device.wait_idle().unwrap();
+
+    // Обратная копия доказывает, что данные реально дошли до device-local
+    // буфера, а не остались в staging.
+    let back = device
+        .create_buffer(&GpuBufferDesc::new("copy-back", 16, BufferUsage::staging()))
+        .unwrap();
+    let mut commands = device.create_command_buffer().unwrap();
+    commands.begin().unwrap();
+    commands.copy_buffer_to_buffer(storage, back, 8).unwrap();
+    commands.end().unwrap();
+    commands.finish().unwrap();
+    device.wait_idle().unwrap();
+
+    let bytes = device.read_buffer(back).unwrap();
+    assert_eq!(&bytes[..8], &[9, 8, 7, 6, 5, 4, 3, 2]);
+    assert_eq!(&bytes[8..16], &[0, 0, 0, 0, 0, 0, 0, 0]);
+    assert_eq!(device.validation_errors(), before);
+    assert!(device.destroy_buffer(back));
+    assert!(device.destroy_buffer(storage));
+    assert!(device.destroy_buffer(staging));
+}
+
+#[test]
 fn clear_frame_reads_back_through_staging_buffer() {
     let Some(mut device) = runtime_device() else {
         return;

@@ -136,6 +136,20 @@ pub trait CommandBuffer: Send {
     /// внутри copy-узла Render Graph (ADR-0039).
     fn copy_image_to_buffer(&mut self, image: ImageId, buffer: BufferId) -> Result<(), RhiError>;
 
+    /// Копирует `size` байт из буфера в буфер (ADR-0046).
+    ///
+    /// `src` обязан иметь `BufferUsage::transfer_src`, `dst` —
+    /// `BufferUsage::transfer_dst`; `size` не нулевой и не больше обоих
+    /// буферов. Вызов допустим вне render pass: так staging-буфер с данными
+    /// загружается в device-local storage-буфер, который читает vertex
+    /// pulling (`SV_VertexID`/`SV_InstanceID`).
+    fn copy_buffer_to_buffer(
+        &mut self,
+        src: BufferId,
+        dst: BufferId,
+        size: u64,
+    ) -> Result<(), RhiError>;
+
     /// Рисует вершины.
     fn draw(&mut self, vertices: u32, instances: u32) -> Result<(), RhiError>;
 

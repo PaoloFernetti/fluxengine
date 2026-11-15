@@ -645,6 +645,11 @@ impl RhiDevice for NullDevice {
         // Образы swapchain тоже валидны для render pass/копирования (ADR-0045).
         let mut images: BTreeSet<u64> = self.images.keys().copied().collect();
         images.extend(lock_images(&self.swapchain_images).keys().copied());
+        let buffer_sizes = self
+            .buffers
+            .iter()
+            .map(|(id, desc)| (*id, desc.size))
+            .collect();
         Ok(Box::new(
             NullCommandBuffer::with_resources(
                 self.query_pools.clone(),
@@ -655,6 +660,7 @@ impl RhiDevice for NullDevice {
                 images,
                 descriptor_sets,
             )
+            .with_buffer_sizes(buffer_sizes)
             .with_memory(self.memory.clone()),
         ))
     }
@@ -882,6 +888,7 @@ pub struct NullCommandBuffer {
     timestamps: Vec<(QueryPoolId, u32)>,
     query_pools: BTreeMap<u64, u32>,
     buffers: BTreeMap<u64, BufferUsage>,
+    buffer_sizes: BTreeMap<u64, u64>,
     images: BTreeSet<u64>,
     descriptor_sets: BTreeMap<u64, Vec<DescriptorBinding>>,
     memory: Option<SharedMemory>,
@@ -918,6 +925,13 @@ impl NullCommandBuffer {
             descriptor_sets,
             ..Self::default()
         }
+    }
+
+    /// Добавляет размеры буферов (валидация `copy_buffer_to_buffer`).
+    #[must_use]
+    pub fn with_buffer_sizes(mut self, sizes: BTreeMap<u64, u64>) -> Self {
+        self.buffer_sizes = sizes;
+        self
     }
 
     /// Подключает общую память устройства (эмуляция содержимого ресурсов).
@@ -1177,6 +1191,65 @@ impl CommandBuffer for NullCommandBuffer {
         Ok(())
     }
 
+    fn copy_buffer_to_buffer(
+        &mut self,
+        src: BufferId,
+        dst: BufferId,
+        size: u64,
+    ) -> Result<(), RhiError> {
+        if !self.begun {
+            return Err(RhiError::validation("command buffer is not begun"));
+        }
+        if self.in_pass {
+            return Err(RhiError::validation("copy inside a render pass"));
+        }
+        let Some(source_usage) = self.buffers.get(&src.0) else {
+            return Err(RhiError::validation("unknown source buffer"));
+        };
+        if !source_usage.transfer_src {
+            return Err(RhiError::validation(
+                "copy source must be a transfer source",
+            ));
+        }
+        let Some(target_usage) = self.buffers.get(&dst.0) else {
+            return Err(RhiError::validation("unknown destination buffer"));
+        };
+        if !target_usage.transfer_dst {
+            return Err(RhiError::validation(
+                "copy destination must be a transfer destination",
+            ));
+        }
+        if size == 0 {
+            return Err(RhiError::validation("copy size must be non-zero"));
+        }
+        for id in [src.0, dst.0] {
+            if let Some(known) = self.buffer_sizes.get(&id) {
+                if size > *known {
+                    return Err(RhiError::validation("copy size exceeds buffer size"));
+                }
+            }
+        }
+        if let Some(memory) = &self.memory {
+            let mut memory = lock_memory(memory);
+            let bytes = memory.buffers.get(&src.0).cloned().unwrap_or_default();
+            // Буфер-приёмник может ещё не иметь содержимого (device-local
+            // storage): создаём его по известному размеру, чтобы эмуляция
+            // upload → readback работала и в Null.
+            let hint = self.buffer_sizes.get(&dst.0).copied().unwrap_or(0);
+            let destination = memory
+                .buffers
+                .entry(dst.0)
+                .or_insert_with(|| vec![0; usize::try_from(hint).unwrap_or(0)]);
+            let len = usize::try_from(size)
+                .unwrap_or(usize::MAX)
+                .min(bytes.len())
+                .min(destination.len());
+            destination[..len].copy_from_slice(&bytes[..len]);
+        }
+        self.copies = self.copies.saturating_add(1);
+        Ok(())
+    }
+
     fn draw(&mut self, _vertices: u32, _instances: u32) -> Result<(), RhiError> {
         if !self.in_pass {
             return Err(RhiError::validation("draw outside render pass"));
@@ -1423,6 +1496,66 @@ mod tests {
         let vertex = device.create_buffer(&buffer(16)).unwrap();
         assert!(device.write_buffer(vertex, 0, &[0]).is_err());
         assert!(device.read_buffer(vertex).is_err());
+    }
+
+    #[test]
+    fn buffer_copy_uploads_storage_and_reads_back() {
+        let mut device = NullDevice::new();
+        let staging = device
+            .create_buffer(&GpuBufferDesc::new("staging", 16, BufferUsage::staging()))
+            .unwrap();
+        // Storage-буфер для upload-а: приёмник копирования и источник обратной
+        // проверки (ADR-0046).
+        let storage = device
+            .create_buffer(&GpuBufferDesc::new(
+                "storage",
+                16,
+                BufferUsage {
+                    storage: true,
+                    transfer_src: true,
+                    transfer_dst: true,
+                    ..BufferUsage::none()
+                },
+            ))
+            .unwrap();
+        device
+            .write_buffer(staging, 0, &[1, 2, 3, 4, 5, 6, 7, 8])
+            .unwrap();
+
+        let mut commands = device.create_command_buffer().unwrap();
+        commands.begin().unwrap();
+        commands.copy_buffer_to_buffer(staging, storage, 8).unwrap();
+        // Ошибки контракта: нулевой размер, выход за границы, неизвестный буфер.
+        assert!(commands.copy_buffer_to_buffer(staging, storage, 0).is_err());
+        assert!(commands
+            .copy_buffer_to_buffer(staging, storage, 32)
+            .is_err());
+        assert!(commands
+            .copy_buffer_to_buffer(staging, BufferId(99), 8)
+            .is_err());
+        commands.end().unwrap();
+        commands.finish().unwrap();
+
+        let back = device
+            .create_buffer(&GpuBufferDesc::new("back", 16, BufferUsage::staging()))
+            .unwrap();
+        let mut commands = device.create_command_buffer().unwrap();
+        commands.begin().unwrap();
+        commands.copy_buffer_to_buffer(storage, back, 8).unwrap();
+        commands.end().unwrap();
+        commands.finish().unwrap();
+        let bytes = device.read_buffer(back).unwrap();
+        assert_eq!(&bytes[0..8], &[1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(&bytes[8..16], &[0, 0, 0, 0, 0, 0, 0, 0]);
+
+        // Буфер без transfer-флагов не участвует в копировании.
+        let plain = device
+            .create_buffer(&GpuBufferDesc::new("plain", 16, BufferUsage::storage()))
+            .unwrap();
+        let mut commands = device.create_command_buffer().unwrap();
+        commands.begin().unwrap();
+        assert!(commands.copy_buffer_to_buffer(plain, back, 8).is_err());
+        assert!(commands.copy_buffer_to_buffer(back, plain, 8).is_err());
     }
 
     #[test]

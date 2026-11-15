@@ -421,6 +421,73 @@ impl CommandBuffer for VulkanCommandBuffer {
         Ok(())
     }
 
+    fn copy_buffer_to_buffer(
+        &mut self,
+        src: BufferId,
+        dst: BufferId,
+        size: u64,
+    ) -> Result<(), RhiError> {
+        self.require_recording()?;
+        if self.in_pass {
+            return Err(RhiError::validation("copy inside a render pass"));
+        }
+        if size == 0 {
+            return Err(RhiError::validation("copy size must be non-zero"));
+        }
+        let (source, target) = {
+            let store = self.context.store.lock();
+            let source = store
+                .buffers
+                .get(&src.0)
+                .ok_or_else(|| RhiError::validation("unknown source buffer"))?;
+            if !source.usage.transfer_src {
+                return Err(RhiError::validation(
+                    "copy source must be a transfer source",
+                ));
+            }
+            let target = store
+                .buffers
+                .get(&dst.0)
+                .ok_or_else(|| RhiError::validation("unknown destination buffer"))?;
+            if !target.usage.transfer_dst {
+                return Err(RhiError::validation(
+                    "copy destination must be a transfer destination",
+                ));
+            }
+            if size > source.size || size > target.size {
+                return Err(RhiError::validation("copy size exceeds buffer size"));
+            }
+            (source.buffer, target.buffer)
+        };
+        let region = vk::BufferCopy::default().size(size);
+        // SAFETY: buffers belong to the device and the copy is in bounds.
+        unsafe {
+            self.context.device.cmd_copy_buffer(
+                self.command,
+                source,
+                target,
+                std::slice::from_ref(&region),
+            );
+            // Делаем запись transfer видимой vertex/fragment-стадиям: следующий
+            // submit читает storage-буфер в vertex pulling.
+            let barrier = vk::MemoryBarrier::default()
+                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                .dst_access_mask(
+                    vk::AccessFlags::SHADER_READ | vk::AccessFlags::VERTEX_ATTRIBUTE_READ,
+                );
+            self.context.device.cmd_pipeline_barrier(
+                self.command,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::VERTEX_SHADER | vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::DependencyFlags::empty(),
+                std::slice::from_ref(&barrier),
+                &[],
+                &[],
+            );
+        }
+        Ok(())
+    }
+
     fn draw(&mut self, vertices: u32, instances: u32) -> Result<(), RhiError> {
         self.require_recording()?;
         if !self.in_pass {

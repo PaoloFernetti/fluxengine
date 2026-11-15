@@ -609,6 +609,9 @@ deadzone не теряет диапазон (rescale); rebinding roundtrip че�
       acquire → `ColorAttachment`, present → `Present`, владение цепочкой
       (ADR-0045); Null-тест clear → readback → present, Vulkan — clear в
       acquired-образ
+- [x] Upload геометрии: `CommandBuffer::copy_buffer_to_buffer` — staging →
+      device-local storage под vertex pulling, барьер записи → чтения,
+      Null-эмуляция и Vulkan-тест upload → readback (ADR-0046)
 - [ ] GPU-пайплайн: vertex pulling `SV_VertexID` → G-buffer → deferred
       lighting → UI-stub → present (DXC и контракт образа готовы; осталась
       геометрия сцены и UI-stub)

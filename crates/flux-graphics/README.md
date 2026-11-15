@@ -104,9 +104,14 @@ flux-graphics = { workspace = true, features = ["vulkan"] }
   валидирует размер/выравнивание и отдаёт `push_constants_bytes()`.
 - Копирование и readback: `copy_buffer_to_image`/`copy_image_to_buffer`
   (вне render pass), `write_buffer`/`read_buffer` для host-visible staging.
+  Buffer→buffer (ADR-0046): `copy_buffer_to_buffer(src, dst, size)` —
+  `transfer_src` → `transfer_dst`, Vulkan добавляет барьер
+  `TRANSFER_WRITE → SHADER_READ | VERTEX_ATTRIBUTE_READ`. Так staging с
+  host-данными загружается в device-local storage для vertex pulling.
   Null-бэкенд эмулирует содержимое (WP D4): clear color/depth в
-  `begin_render_pass`, перенос байтов в копиях, поэтому срез
-  «clear → copy → readback» проверяется без GPU.
+  `begin_render_pass`, перенос байтов в копиях (включая buffer→buffer),
+  поэтому срезы «clear → copy → readback» и «upload → copy → readback»
+  проверяются без GPU.
 - Реальные шейдеры: `shaders/fullscreen.vert.hlsl` (`SV_VertexID`) и
   `shaders/solid.frag.hlsl` → `shaders/compiled/*.spv` (DXC,
   `tools/flux-assetc shader`). `tests/vulkan_pso.rs` собирает PSO, рисует

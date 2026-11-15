@@ -76,7 +76,7 @@ flowchart LR
 - Каждый термин из ADR обязан иметь запись в глоссарии канона
   (правило «термин имеет владельца»).
 
-## Индекс (ADR-0001…0027 — архитектурная фаза; 0028…0030 — этап 2; 0031…0033 — этап 3; 0034…0045 — этап 4/инструменты)
+## Индекс (ADR-0001…0027 — архитектурная фаза; 0028…0030 — этап 2; 0031…0033 — этап 3; 0034…0046 — этап 4/инструменты)
 
 | ADR | Решение | Источник |
 |---|---|---|
@@ -125,6 +125,7 @@ flowchart LR
 | 0043 | `.unitypackage` в flux-assetc: gzip/tar (`flate2`, `tar`), staging, `pathname` → дерево `Assets/`, meta рядом, защита от traversal | tools/flux-assetc |
 | 0044 | Рантайм-применение `GraphicsSettings`: `FrameFeatures`, `SettingsRuntime`, нейтральные clear отключённых эффектов, `render_scale` в `graph` | flux-graphics |
 | 0045 | Образы swapchain как `ImageId`: acquire → `ColorAttachment`, present → `Present`, владение swapchain, инвалидация framebuffer-кэша | flux-graphics |
+| 0046 | Копирование buffer→buffer: staging upload в device-local storage, `TRANSFER_WRITE → SHADER_READ` барьер, Null-эмуляция | flux-graphics |
 
 Дополнительные решения, зафиксированные в плане, но не требующие отдельных
 ADR-файлов (частично покрыты выше): input abstraction (flux-platform),
@@ -173,6 +174,10 @@ undo × PIE × стриминг (flux-editor), golden-сейвы, virtual textur
   реестре устройства с `owned: false` и используются как обычные `ImageId`;
   `acquire` больше не переводит образ в `PRESENT_SRC_KHR` (это делает
   `present`). Формулировки ADR-0034/0039 не переписываются.
+- ADR-0046 дополняет staging-контракт ADR-0039: host-visible остаются только
+  staging-буферы (`write_buffer`/`read_buffer`), а device-local storage
+  заполняются `copy_buffer_to_buffer` после `write_buffer`. Формулировка
+  ADR-0039 не переписывается.
 - FrameStats по пассам добавлен поверх ADR-0042 без нового ADR: `GpuFrame`
   использует query pools из ADR-0037 и отдаёт `GpuZone` через `zones()`,
   `pass_duration_ns()`, `frame_duration_ns()`; цепочка проходов и их форматы
