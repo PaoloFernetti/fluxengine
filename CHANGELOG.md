@@ -4,6 +4,14 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.13.0] - 2026-11-15
+
+### Features
+
+#### dxc
+
+- загрузка последнего релиза DXC (пин опционален) ([7033ea1](https://github.com/PaoloFernetti/fluxengine/commit/7033ea15f2ede0c8919e48cfdc7f0be45943068e))
+
 ## [0.12.0] - 2026-11-15
 
 ### Features
