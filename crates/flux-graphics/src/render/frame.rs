@@ -1261,12 +1261,15 @@ fn clear_image_with(
 /// Форматы цепочки, для которых есть статический pipeline вывода.
 const PRESENT_FORMATS_BGRA: [TextureFormat; 1] = [TextureFormat::Bgra8Srgb];
 const PRESENT_FORMATS_RGBA: [TextureFormat; 1] = [TextureFormat::Rgba8Srgb];
+const PRESENT_FORMATS_RGBA_UNORM: [TextureFormat; 1] = [TextureFormat::Rgba8Unorm];
 
 /// Статический список форматов для `PipelineDesc` (ADR-0048).
 fn present_formats(format: TextureFormat) -> Result<&'static [TextureFormat], RhiError> {
     match format {
         TextureFormat::Bgra8Srgb => Ok(&PRESENT_FORMATS_BGRA),
         TextureFormat::Rgba8Srgb => Ok(&PRESENT_FORMATS_RGBA),
+        // Headless WSI (lavapipe) отдаёт R8G8B8A8_UNORM без sRGB-варианта.
+        TextureFormat::Rgba8Unorm => Ok(&PRESENT_FORMATS_RGBA_UNORM),
         _ => Err(RhiError::Unsupported {
             feature: "present target format",
         }),
@@ -1608,6 +1611,23 @@ mod tests {
         assert_eq!(bytes.len(), FRAME_PUSH_CONSTANT_BYTES as usize);
         let first = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
         assert!((first - 1.0 / 64.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn present_formats_cover_srgb_and_unorm_targets() {
+        assert_eq!(
+            present_formats(TextureFormat::Bgra8Srgb).unwrap(),
+            [TextureFormat::Bgra8Srgb].as_slice()
+        );
+        assert_eq!(
+            present_formats(TextureFormat::Rgba8Srgb).unwrap(),
+            [TextureFormat::Rgba8Srgb].as_slice()
+        );
+        assert_eq!(
+            present_formats(TextureFormat::Rgba8Unorm).unwrap(),
+            [TextureFormat::Rgba8Unorm].as_slice()
+        );
+        assert!(present_formats(TextureFormat::Rgba16Float).is_err());
     }
 
     #[test]

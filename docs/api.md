@@ -8922,7 +8922,8 @@ Push constants G-buffer-прохода — `camera.view_projection()` (64 B);
 рисует UI-stub (панель 30% × 25% в левом верхнем углу) и пишет в `target`.
 Состояние `target` считается `ColorAttachment` — образ только что получен
 `Swapchain::acquire`. Pipeline вывода создаётся под `target_format`
-(`Bgra8Srgb`/`Rgba8Srgb`, иначе `Unsupported`) и пересоздаётся при смене.
+(`Bgra8Srgb`/`Rgba8Srgb`/`Rgba8Unorm`, иначе `Unsupported`) и пересоздаётся
+при смене.
 
 #### `GpuFrame::present(&mut self, device, params, swapchain) -> Result<u32, RhiError>`
 
@@ -10611,12 +10612,15 @@ https и ssh remote.
 - **I9i (этап 4, ADR-0048)**: UI-stub и present — `GpuFrame::render_to`
   добавляет в граф `frame.ui` (`read` финального выхода, `color` цели),
   `GpuFrame::present` = acquire → render → present; pipeline `frame-ui`
-  создаётся под формат цепочки (`Bgra8Srgb`/`Rgba8Srgb`, иначе
-  `Unsupported`), набор перепривязывается к текущему выходу TAA. UI-stub —
+  создаётся под формат цепочки (`Bgra8Srgb`/`Rgba8Srgb`/`Rgba8Unorm`, иначе
+  `Unsupported`), набор перепривязывается к текущему выходу TAA. Выбор
+  формата поверхности предпочитает sRGB и только RHI-поддерживаемые
+  варианты — headless WSI lavapipe отдаёт `R8G8B8A8_UNORM`. UI-stub —
   панель 30% × 25% с blend 0.8; проход не входит в FrameStats. Тесты: Null
   `null_frame_presents_ui_stub_to_swapchain`, Vulkan
-  `ui_stub_is_presented_to_swapchain` (панель темнее эталона, вне панели
-  кадры совпадают, validation чистый).
+  `ui_stub_is_presented_to_swapchain` (эталон без `frame.ui` через
+  `render`+`readback`, сравнение в линейном пространстве по формуле
+  `0.2·scene + 0.016`, validation чистый).
 - **flux-assetc unitypackage (ADR-0043)**: `ExtractOptions`
   (`output`/`keep_meta`/`overwrite`/`dry_run`), `ExtractReport`
   (`assets`/`folders`/`skipped`/`bytes`/`paths`) и

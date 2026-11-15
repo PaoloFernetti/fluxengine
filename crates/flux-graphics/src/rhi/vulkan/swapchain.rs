@@ -411,15 +411,26 @@ impl VulkanPresentSwapchain {
                 .get_physical_device_surface_present_modes(self.context.physical, self.surface)
         }
         .map_err(convert::map_vk)?;
+        // Приоритет: точный запрошенный sRGB-формат → любой sRGB-формат,
+        // который умеет RHI → любой RHI-формат. Headless WSI lavapipe отдаёт
+        // только `R8G8B8A8_UNORM`, поэтому fallback на `formats.first()`
+        // приводил к `Unsupported` уже на этапе вывода кадра.
+        let supported = |format: vk::Format| convert::texture_format(format).is_some();
         let chosen_format = formats
             .iter()
             .find(|candidate| {
                 candidate.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
                     && candidate.format == convert::format(self.format)
             })
-            .or_else(|| formats.first())
+            .or_else(|| {
+                formats.iter().find(|candidate| {
+                    candidate.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
+                        && supported(candidate.format)
+                })
+            })
+            .or_else(|| formats.iter().find(|candidate| supported(candidate.format)))
             .copied()
-            .ok_or_else(|| RhiError::Surface("surface has no formats".into()))?;
+            .ok_or_else(|| RhiError::Surface("surface has no RHI-supported formats".into()))?;
         self.format = convert::texture_format(chosen_format.format).ok_or_else(|| {
             RhiError::Surface(format!(
                 "surface format {:?} is not supported by RHI",

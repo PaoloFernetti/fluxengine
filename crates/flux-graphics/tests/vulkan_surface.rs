@@ -10,9 +10,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use flux_graphics::{
-    decode_rgba16f, decode_srgb_u8, BarrierBatch, BufferUsage, FrameFeatures, FrameParams,
-    FrameStage, GpuBufferDesc, GpuFrame, ImageId, ImageState, RenderPassDesc, RhiDevice,
-    SurfaceTarget, SwapchainDesc, TextureFormat, VulkanDevice,
+    decode_rgba16f, decode_srgb_u8, decode_unorm_u8, BarrierBatch, BufferUsage, FrameFeatures,
+    FrameParams, FrameStage, GpuBufferDesc, GpuFrame, ImageId, ImageState, RenderPassDesc,
+    RhiDevice, SurfaceTarget, SwapchainDesc, TextureFormat, VulkanDevice,
 };
 
 fn runtime_device() -> Option<VulkanDevice> {
@@ -190,11 +190,19 @@ fn ui_stub_is_presented_to_swapchain() {
     // цветовой целью последнего прохода.
     let presented = read_image(&mut device, image, ImageState::ColorAttachment, size, size);
 
-    // Эталон — линейный RGBA16F; presented — Bgra8Srgb (байты B, G, R, A).
+    // Эталон — линейный RGBA16F; presented — фактический формат цепочки:
+    // headless WSI на lavapipe отдаёт Rgba8Unorm, десктоп — *8Srgb.
+    let format = swapchain.format();
+    let (red_index, decode_red): (usize, fn(u8) -> f32) = match format {
+        TextureFormat::Bgra8Srgb => (2, decode_srgb_u8),
+        TextureFormat::Rgba8Srgb => (0, decode_srgb_u8),
+        TextureFormat::Rgba8Unorm => (0, decode_unorm_u8),
+        other => panic!("unexpected swapchain format: {other:?}"),
+    };
     let reference_red = |x: u32, y: u32| decode_rgba16f(&reference, (y * size + x) as usize)[0];
     let presented_red = |x: u32, y: u32| {
-        let offset = ((y * size + x) * 4) as usize;
-        decode_srgb_u8(presented[offset + 2])
+        let offset = ((y * size + x) * 4) as usize + red_index;
+        decode_red(presented[offset])
     };
 
     // Вне панели UI не искажает кадр.
