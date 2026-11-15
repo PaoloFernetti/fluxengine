@@ -4,6 +4,20 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.15.0] - 2026-11-15
+
+### Features
+
+#### graphics
+
+- copy_buffer_to_buffer для upload в storage (ADR-0046) ([23d171e](https://github.com/PaoloFernetti/fluxengine/commit/23d171e0cb2991c93aa2cbb76e3351a7cbe67691))
+
+### Fixes
+
+#### ci
+
+- GITHUB_TOKEN для шага fetch DXC ([b02814d](https://github.com/PaoloFernetti/fluxengine/commit/b02814d0276fe20a72fa187b1c2dada1f5b9677e))
+
 ## [0.14.0] - 2026-11-15
 
 ### Features
