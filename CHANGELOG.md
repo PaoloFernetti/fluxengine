@@ -4,6 +4,14 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.19.0] - 2026-11-15
+
+### Features
+
+#### graphics
+
+- shadow map с camera-relative light space (ADR-0050) ([dc5bdb0](https://github.com/PaoloFernetti/fluxengine/commit/dc5bdb0e61ac40abbc1d065eccfa53e287abce58))
+
 ## [0.18.0] - 2026-11-15
 
 ### Features
