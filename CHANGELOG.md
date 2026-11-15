@@ -4,6 +4,14 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.0] - 2026-11-15
+
+### Features
+
+#### graphics
+
+- FrameStats по пассам кадра через query pools ([1df00d8](https://github.com/PaoloFernetti/fluxengine/commit/1df00d8f9742525f9fe4987247ea729854fc10a7))
+
 ## [0.7.0] - 2026-11-14
 
 ### Features

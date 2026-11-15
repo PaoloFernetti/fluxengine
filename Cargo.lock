@@ -687,31 +687,31 @@ checksum = "1c66915cc5391097de7a2b0b972e8505aa33c0df401fd3a6811dbdb32881ba48"
 
 [[package]]
 name = "flux-ai"
-version = "0.7.0"
+version = "0.8.0"
 
 [[package]]
 name = "flux-anim"
-version = "0.7.0"
+version = "0.8.0"
 
 [[package]]
 name = "flux-asset"
-version = "0.7.0"
+version = "0.8.0"
 
 [[package]]
 name = "flux-assetc"
-version = "0.7.0"
+version = "0.8.0"
 
 [[package]]
 name = "flux-audio"
-version = "0.7.0"
+version = "0.8.0"
 
 [[package]]
 name = "flux-build"
-version = "0.7.0"
+version = "0.8.0"
 
 [[package]]
 name = "flux-core"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "crossbeam-deque",
  "crossbeam-queue",
@@ -729,7 +729,7 @@ dependencies = [
 
 [[package]]
 name = "flux-ecs"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "criterion",
  "flux-core",
@@ -745,11 +745,11 @@ dependencies = [
 
 [[package]]
 name = "flux-editor"
-version = "0.7.0"
+version = "0.8.0"
 
 [[package]]
 name = "flux-engine"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "flux-core",
  "flux-ecs",
@@ -768,7 +768,7 @@ dependencies = [
 
 [[package]]
 name = "flux-graphics"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "ash",
  "flux-core",
@@ -782,7 +782,7 @@ dependencies = [
 
 [[package]]
 name = "flux-macros"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -792,7 +792,7 @@ dependencies = [
 
 [[package]]
 name = "flux-math"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "glam",
  "serde",
@@ -801,11 +801,11 @@ dependencies = [
 
 [[package]]
 name = "flux-net"
-version = "0.7.0"
+version = "0.8.0"
 
 [[package]]
 name = "flux-physics"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "flux-core",
  "ron",
@@ -814,7 +814,7 @@ dependencies = [
 
 [[package]]
 name = "flux-platform"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "flux-core",
  "gilrs",
@@ -828,7 +828,7 @@ dependencies = [
 
 [[package]]
 name = "flux-release"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "clap",
  "semver",
@@ -841,15 +841,15 @@ dependencies = [
 
 [[package]]
 name = "flux-scene"
-version = "0.7.0"
+version = "0.8.0"
 
 [[package]]
 name = "flux-script"
-version = "0.7.0"
+version = "0.8.0"
 
 [[package]]
 name = "flux-ui"
-version = "0.7.0"
+version = "0.8.0"
 
 [[package]]
 name = "fnv"
