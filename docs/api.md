@@ -49,6 +49,7 @@
 | 4 | I9e | Рантайм-применение `GraphicsSettings`: `FrameFeatures`, `SettingsRuntime`, feature-aware граф кадра, `render_scale` в `graph` (ADR-0044) |
 | 4 | I9f | Образы swapchain как `ImageId`: `Swapchain::image`/`acquired_image`, владение цепочкой, переходы `acquire`/`present` (ADR-0045) |
 | 4 | I9g | Копирование buffer→buffer: `copy_buffer_to_buffer`, upload staging → device-local storage, барьер `TRANSFER_WRITE → SHADER_READ` (ADR-0046) |
+| 4 | I9h | GPU-геометрия сцены: `SceneGeometry` (vertex pulling `SV_VertexID`/`SV_InstanceID`), `GpuFrame::render_scene`, unit-куб и инстансы в storage-буферах (ADR-0047) |
 | — | tool | `tools/flux-assetc unitypackage`: gzip/tar → дерево `Assets/`, meta рядом, защита от traversal, `--no-meta`/`--overwrite`/`--dry-run` (ADR-0043) |
 | — | release | `tools/flux-release`: Conventional Commits → semver, версия `Cargo.toml`, `CHANGELOG.md`, commit/annotated tag; pre-release, монорепо fixed/independent, opt-in publish/gh/semver-checks (ADR-0040) |
 
@@ -8907,6 +8908,13 @@ assert_eq!(push.len(), FRAME_PUSH_CONSTANT_BYTES as usize);
 submit `history`/`output` меняются местами (ping-pong, только при TAA), а
 набор TAA переписывается на новый выход. Требует `wait_idle` до возврата.
 
+#### `GpuFrame::render_scene(&mut self, device, params, geometry, camera) -> Result<(), RhiError>`
+
+Тот же кадр, но `frame.gbuffer` рисует инстансы [`SceneGeometry`] через
+vertex pulling (ADR-0047) вместо процедурного полноэкранного шейдера.
+Push constants G-buffer-прохода — `camera.view_projection()` (64 B);
+остальные проходы не меняются.
+
 #### `GpuFrame::stage(&self, stage) -> (ImageId, ImageState, u32)`
 
 Изображение, его текущее состояние и байт на пиксель для `FrameStage`:
@@ -8933,6 +8941,9 @@ submit `history`/`output` меняются местами (ping-pong, тольк
 фиксирован: `FRAME_PASS_NAMES = ["frame.gbuffer", "frame.ssao",
 "frame.lighting", "frame.bloom", "frame.tonemap", "frame.taa"]`; `zones()`
 содержит только проходы из `FrameFeatures::pass_names()`.
+Неактивные слоты закрываются парой нулевых диапазонов: `read_query_pool`
+читает весь пул с `WAIT`, а незаписанный запрос на Vulkan никогда не станет
+доступным (иначе `FrameFeatures::none()` зависает на реальном GPU).
 Null-бэкенд отдаёт детерминированные значения (`index * 1000` нс), Vulkan —
 реальные GPU-таймстемпы.
 
@@ -8996,6 +9007,56 @@ CPU-эталоном от readback предыдущего прохода: все
 ```text
 cargo test -p flux-graphics --features vulkan --test vulkan_frame
 ```
+
+### GPU-геометрия ✅
+
+`render::geometry` (ADR-0047): вершины и инстансы лежат в device-local
+storage-буферах, шейдер выбирает их по `SV_VertexID`/`SV_InstanceID`.
+Один unit-куб (36 вершин) обслуживает любое число инстансов; загрузка —
+staging + `copy_buffer_to_buffer` (ADR-0046).
+
+#### `SceneGeometry::new(device, capacity) -> Result<Self, RhiError>`
+
+Создаёт буферы вершин/инстансов (`storage | transfer_dst`), staging,
+pipeline `scene-gbuffer` (форматы G-buffer, `D32Float`, push constants 64 B,
+`vertex_stride = 0`) и descriptor set 0 (binding 0 — вершины, 1 — инстансы).
+Нулевая ёмкость — `Validation`.
+
+#### `SceneGeometry::upload(&mut self, device, scene) -> Result<(), RhiError>`
+
+Загружает видимые инстансы: `visible_indices()` после `extract` (или все,
+если culling не запускался). Позиции — camera-relative; материал —
+палитра-заглушка `MATERIAL_PALETTE` (`material_id % 4`). Сцена без
+интерполяции или больше ёмкости — `Validation`.
+
+```rust
+let mut device = NullDevice::new();
+let mut geometry = SceneGeometry::new(&mut device, 8).unwrap();
+let camera = Camera::default();
+let mut scene = RenderScene::new();
+scene.push(Vec3::new(0.0, 0.0, -2.0), Vec3::new(0.0, 0.0, -2.0), 0, 0);
+scene.extract(1.0, &Frustum::from_view_projection(camera.view_projection()));
+geometry.upload(&mut device, &scene).unwrap();
+assert_eq!(geometry.instance_count(), 1);
+assert_eq!(geometry.vertex_count(), 36);
+geometry.destroy(&mut device);
+```
+
+#### Доступ
+
+- `capacity()`, `instance_count()`, `vertex_count()` — состояние геометрии.
+- `pipeline()`, `descriptor_set()` — для G-buffer-прохода `GpuFrame`.
+- `scene_push_constants(&Mat4) -> [u8; 64]` — view-projection column-major.
+- `destroy(self, device)` — pipeline, набор и три буфера.
+- Константы: `SCENE_VERTEX_BYTES = 24`, `SCENE_INSTANCE_BYTES = 48`,
+  `SCENE_PUSH_CONSTANT_BYTES = 64`, `MATERIAL_PALETTE`.
+
+#### Проверка
+
+`tests/vulkan_frame.rs::scene_geometry_fills_gbuffer`: куб в центре кадра,
+readback RT0 (albedo), RT2 (ORM) и глубины (Reversed-Z), чистый validation.
+Null-тест `null_frame_renders_scene_geometry` проверяет upload и draw-команды
+(шейдеры Null не исполняет).
 
 ### Шейдерные пермутации ✅
 
@@ -10519,10 +10580,19 @@ https и ssh remote.
   `CommandBuffer::copy_buffer_to_buffer(src, dst, size)`; `src` обязан быть
   `transfer_src`, `dst` — `transfer_dst`, размер проверяется по обоим
   буферам. Vulkan — `vkCmdCopyBuffer` + `MemoryBarrier`
-  `TRANSFER_WRITE → SHADER_READ | VERTEX_ATTRIBUTE_READ`, Null — перенос байт
-  в `NullMemory`. Host-visible остаются только staging-буферы (ADR-0039).
-  Тесты: Null `buffer_copy_uploads_storage_and_reads_back`, Vulkan — тот же
-  срез в `tests/vulkan_pso.rs`.
+  `TRANSFER_WRITE → SHADER_READ`, Null — перенос байт в `NullMemory`.
+  Host-visible остаются только staging-буферы (ADR-0039). Тесты: Null
+  `buffer_copy_uploads_storage_and_reads_back`, Vulkan — тот же срез в
+  `tests/vulkan_pso.rs`.
+- **I9h (этап 4, ADR-0047)**: GPU-геометрия сцены — `render::geometry::
+  SceneGeometry` (unit-куб и инстансы в storage-буферах, descriptor set 0,
+  push constants view-projection), `GpuFrame::render_scene` подменяет
+  источник G-buffer-прохода на vertex pulling. `upload` берёт
+  `visible_indices()` после `extract`, материалы — палитра-заглушка.
+  Тесты: Null `null_frame_renders_scene_geometry`, Vulkan
+  `scene_geometry_fills_gbuffer` (albedo/ORM/depth центра куба). Попутно
+  закрыты неактивные timestamp-слоты: `read_query_pool(WAIT)` зависал при
+  `FrameFeatures::none()` на реальном GPU.
 - **flux-assetc unitypackage (ADR-0043)**: `ExtractOptions`
   (`output`/`keep_meta`/`overwrite`/`dry_run`), `ExtractReport`
   (`assets`/`folders`/`skipped`/`bytes`/`paths`) и

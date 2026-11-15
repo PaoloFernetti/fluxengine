@@ -28,9 +28,11 @@ use super::super::rhi::{
     SamplerDesc, SamplerId, TextureFormat, TextureUsage,
 };
 use super::gbuffer::{GbufferLayout, COLOR_ATTACHMENTS};
+use super::geometry::{scene_push_constants, SceneGeometry};
 use super::graph::{GraphImage, GraphImageKey, GraphPass, PassKind, RenderGraph};
 use super::pbr::{self, Material};
 use super::post;
+use super::scene::Camera;
 use super::tonemap::Tonemap;
 
 const FULLSCREEN_VS: &[u8] = include_bytes!("../../shaders/compiled/fullscreen.vert.spv");
@@ -717,6 +719,30 @@ impl GpuFrame {
         }
     }
 
+    /// Рисует кадр с геометрией сцены (4.5, ADR-0047): G-buffer-проход
+    /// использует vertex pulling из [`SceneGeometry`] вместо процедурного
+    /// полноэкранного шейдера.
+    ///
+    /// # Errors
+    ///
+    /// Ошибка командного буфера или графического прохода.
+    pub fn render_scene(
+        &mut self,
+        device: &mut dyn RhiDevice,
+        params: &FrameParams,
+        geometry: &SceneGeometry,
+        camera: &Camera,
+    ) -> Result<(), RhiError> {
+        let scene = SceneDraw {
+            pipeline: geometry.pipeline(),
+            set: geometry.descriptor_set(),
+            vertices: geometry.vertex_count(),
+            instances: geometry.instance_count(),
+            push: scene_push_constants(&camera.view_projection()),
+        };
+        self.render_inner(device, params, Some(&scene))
+    }
+
     /// Рисует кадр: барьеры и тела пассов из Render Graph.
     ///
     /// # Errors
@@ -726,6 +752,15 @@ impl GpuFrame {
         &mut self,
         device: &mut dyn RhiDevice,
         params: &FrameParams,
+    ) -> Result<(), RhiError> {
+        self.render_inner(device, params, None)
+    }
+
+    fn render_inner(
+        &mut self,
+        device: &mut dyn RhiDevice,
+        params: &FrameParams,
+        scene: Option<&SceneDraw>,
     ) -> Result<(), RhiError> {
         let (history, output) = if self.features.taa {
             if self.history_is_a {
@@ -752,6 +787,17 @@ impl GpuFrame {
         commands.begin()?;
         let query_pool = self.query_pool;
         commands.reset_query_pool(query_pool, 0, FRAME_QUERY_COUNT)?;
+        // Отключённые проходы не пишут таймстемпы, но `read_query_pool`
+        // читает весь пул с WAIT: незаписанный запрос никогда не станет
+        // доступным (Vulkan), поэтому закрываем неактивные слоты парой
+        // нулевых диапазонов.
+        let active = self.features.pass_names();
+        for (slot, name) in FRAME_PASS_NAMES.iter().enumerate() {
+            if !active.contains(name) {
+                commands.write_timestamp(query_pool, slot as u32 * 2)?;
+                commands.write_timestamp(query_pool, slot as u32 * 2 + 1)?;
+            }
+        }
         let (rt0, rt1, rt2, depth) = (self.rt0, self.rt1, self.rt2, self.depth);
         let (ssao, hdr, bloom) = (self.ssao, self.hdr, self.bloom);
         let pipelines = &self.pipelines;
@@ -769,7 +815,10 @@ impl GpuFrame {
                         .with_color(rt2)
                         .with_depth(depth)
                         .with_clear([0.0, 0.0, 0.0, 1.0]);
-                    draw(commands, pipelines.gbuffer, None, &push, &desc)
+                    match scene {
+                        Some(scene) => draw_geometry(commands, scene, &desc),
+                        None => draw(commands, pipelines.gbuffer, None, &push, &desc),
+                    }
                 }
                 "frame.ssao" => {
                     let desc = RenderPassDesc::new("frame-ssao")
@@ -1051,6 +1100,31 @@ fn clear_image_with(
     commands.end_render_pass()?;
     commands.end()?;
     commands.finish()
+}
+
+/// Описание геометрии сцены для G-buffer-прохода.
+struct SceneDraw {
+    pipeline: PipelineId,
+    set: DescriptorSetId,
+    vertices: u32,
+    instances: u32,
+    push: [u8; FRAME_PUSH_CONSTANT_BYTES as usize],
+}
+
+/// Рисует инстансы сцены через vertex pulling (ADR-0047).
+fn draw_geometry(
+    commands: &mut dyn CommandBuffer,
+    scene: &SceneDraw,
+    pass: &RenderPassDesc,
+) -> Result<(), RhiError> {
+    commands.begin_render_pass(pass)?;
+    if scene.instances > 0 {
+        commands.set_pipeline(scene.pipeline)?;
+        commands.bind_descriptor_set(scene.set)?;
+        commands.push_constants(&scene.push)?;
+        commands.draw(scene.vertices, scene.instances)?;
+    }
+    commands.end_render_pass()
 }
 
 fn draw(
@@ -1413,6 +1487,35 @@ mod tests {
             .unwrap());
         frame.render(&mut device, &FrameParams::default()).unwrap();
         assert_eq!(frame.zones().len(), FRAME_PASS_COUNT);
+        frame.destroy(&mut device);
+    }
+
+    #[test]
+    fn null_frame_renders_scene_geometry() {
+        use crate::render::scene::RenderScene;
+        use crate::rhi::NullDevice;
+        use flux_math::Frustum;
+
+        let mut device = NullDevice::new();
+        let mut geometry = SceneGeometry::new(&mut device, 4).unwrap();
+        let camera = Camera::default();
+        let mut scene = RenderScene::new();
+        let position = Vec3::new(0.0, 0.0, -2.0);
+        scene.push(position, position, 0, 0);
+        scene.extract(
+            1.0,
+            &Frustum::from_view_projection(camera.view_projection()),
+        );
+        geometry.upload(&mut device, &scene).unwrap();
+        assert_eq!(geometry.instance_count(), 1);
+
+        let mut frame = GpuFrame::with_features(&mut device, 8, 8, FrameFeatures::none()).unwrap();
+        frame
+            .render_scene(&mut device, &FrameParams::default(), &geometry, &camera)
+            .unwrap();
+        assert_eq!(frame.zones().len(), 3);
+
+        geometry.destroy(&mut device);
         frame.destroy(&mut device);
     }
 

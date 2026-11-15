@@ -10,6 +10,7 @@ pub mod budget;
 pub mod cull;
 pub mod frame;
 pub mod gbuffer;
+pub mod geometry;
 pub mod graph;
 pub mod pbr;
 pub mod post;
@@ -29,6 +30,10 @@ pub use frame::{
     FRAME_QUERY_COUNT,
 };
 pub use gbuffer::GbufferLayout;
+pub use geometry::{
+    scene_push_constants, SceneGeometry, MATERIAL_PALETTE, SCENE_INSTANCE_BYTES,
+    SCENE_PUSH_CONSTANT_BYTES, SCENE_VERTEX_BYTES,
+};
 pub use graph::{
     AliasSlot, CompiledPass, GraphError, GraphImage, GraphImageKey, GraphPass, PassKind,
     RenderGraph, RenderGraphPlan,

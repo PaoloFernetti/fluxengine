@@ -612,9 +612,11 @@ deadzone не теряет диапазон (rescale); rebinding roundtrip че�
 - [x] Upload геометрии: `CommandBuffer::copy_buffer_to_buffer` — staging →
       device-local storage под vertex pulling, барьер записи → чтения,
       Null-эмуляция и Vulkan-тест upload → readback (ADR-0046)
-- [ ] GPU-пайплайн: vertex pulling `SV_VertexID` → G-buffer → deferred
-      lighting → UI-stub → present (DXC и контракт образа готовы; осталась
-      геометрия сцены и UI-stub)
+- [x] GPU-геометрия: vertex pulling `SV_VertexID`/`SV_InstanceID` →
+      G-buffer — unit-куб и инстансы в storage-буферах, `SceneGeometry`,
+      `GpuFrame::render_scene`; Vulkan-тест albedo/ORM/depth (ADR-0047)
+- [ ] GPU-пайплайн: UI-stub пасс → present в образ swapchain (deferred
+      lighting уже в `GpuFrame`; остались UI-stub и вывод в acquired-образ)
 
 **Приёмка**: extract ≤ 1 мс на эталонной сцене — criterion-бенч
 `crates/flux-graphics/benches/extract.rs` даёт ~37.7 мкс на 10 000 инстансов;

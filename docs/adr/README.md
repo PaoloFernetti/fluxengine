@@ -76,7 +76,7 @@ flowchart LR
 - Каждый термин из ADR обязан иметь запись в глоссарии канона
   (правило «термин имеет владельца»).
 
-## Индекс (ADR-0001…0027 — архитектурная фаза; 0028…0030 — этап 2; 0031…0033 — этап 3; 0034…0046 — этап 4/инструменты)
+## Индекс (ADR-0001…0027 — архитектурная фаза; 0028…0030 — этап 2; 0031…0033 — этап 3; 0034…0047 — этап 4/инструменты)
 
 | ADR | Решение | Источник |
 |---|---|---|
@@ -126,6 +126,7 @@ flowchart LR
 | 0044 | Рантайм-применение `GraphicsSettings`: `FrameFeatures`, `SettingsRuntime`, нейтральные clear отключённых эффектов, `render_scale` в `graph` | flux-graphics |
 | 0045 | Образы swapchain как `ImageId`: acquire → `ColorAttachment`, present → `Present`, владение swapchain, инвалидация framebuffer-кэша | flux-graphics |
 | 0046 | Копирование buffer→buffer: staging upload в device-local storage, `TRANSFER_WRITE → SHADER_READ` барьер, Null-эмуляция | flux-graphics |
+| 0047 | GPU-геометрия сцены: vertex pulling `SV_VertexID`/`SV_InstanceID` из storage-буферов, `GpuFrame::render_scene`, палитра-заглушка | flux-graphics |
 
 Дополнительные решения, зафиксированные в плане, но не требующие отдельных
 ADR-файлов (частично покрыты выше): input abstraction (flux-platform),
@@ -178,6 +179,15 @@ undo × PIE × стриминг (flux-editor), golden-сейвы, virtual textur
   staging-буферы (`write_buffer`/`read_buffer`), а device-local storage
   заполняются `copy_buffer_to_buffer` после `write_buffer`. Формулировка
   ADR-0039 не переписывается.
+- ADR-0047 уточняет источник G-buffer-прохода ADR-0042: `GpuFrame::render`
+  остаётся процедурным (CPU-эталоны и PSNR), `render_scene` рисует инстансы
+  через vertex pulling. Vertex layout v1 из ADR-0035 для сцены не
+  используется; формулировки ADR-0035/0042 не переписываются.
+- ADR-0046: фактический барьер после `copy_buffer_to_buffer` —
+  `TRANSFER_WRITE → SHADER_READ` на стадиях `TRANSFER → VERTEX|FRAGMENT`.
+  `VERTEX_ATTRIBUTE_READ` не используется: сцена читает storage-буфер в
+  vertex shader, а не через vertex input. Формулировка ADR-0046 не
+  переписывается.
 - FrameStats по пассам добавлен поверх ADR-0042 без нового ADR: `GpuFrame`
   использует query pools из ADR-0037 и отдаёт `GpuZone` через `zones()`,
   `pass_duration_ns()`, `frame_duration_ns()`; цепочка проходов и их форматы

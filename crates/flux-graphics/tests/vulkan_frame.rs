@@ -12,9 +12,10 @@
 use flux_graphics::{
     decode_rgba16f, encode_srgb_u8, oct_decode, psnr_bytes, psnr_channels, reference_bloom,
     reference_gbuffer, reference_lighting, reference_ssao, reference_taa, reference_tonemap,
-    FrameParams, FrameStage, GpuFrame, RhiDevice, VulkanDevice, FRAME_PASS_COUNT, FRAME_PASS_NAMES,
+    Camera, FrameFeatures, FrameParams, FrameStage, GpuFrame, RenderScene, RhiDevice,
+    SceneGeometry, VulkanDevice, FRAME_PASS_COUNT, FRAME_PASS_NAMES, MATERIAL_PALETTE,
 };
-use flux_math::Vec3;
+use flux_math::{Frustum, Vec3};
 
 const SIZE: u32 = 32;
 const PSNR_MIN: f64 = 60.0;
@@ -215,4 +216,83 @@ fn gpu_frame_passes_match_cpu_reference() {
         0,
         "frame resources must be released"
     );
+}
+
+#[test]
+fn scene_geometry_fills_gbuffer() {
+    let Some(mut device) = runtime_device() else {
+        return;
+    };
+    let before = device.validation_errors();
+    let size = 32u32;
+    let camera = Camera {
+        aspect: 1.0,
+        ..Camera::default()
+    };
+
+    let mut scene = RenderScene::new();
+    let position = Vec3::new(0.0, 0.0, -2.0);
+    scene.push(position, position, 0, 0);
+    scene.extract(
+        1.0,
+        &Frustum::from_view_projection(camera.view_projection()),
+    );
+    assert_eq!(scene.visible_indices(), &[0]);
+
+    let mut geometry = SceneGeometry::new(&mut device, 4).unwrap();
+    geometry.upload(&mut device, &scene).unwrap();
+    assert_eq!(geometry.instance_count(), 1);
+
+    let mut frame =
+        GpuFrame::with_features(&mut device, size, size, FrameFeatures::none()).unwrap();
+    frame
+        .render_scene(&mut device, &FrameParams::default(), &geometry, &camera)
+        .unwrap();
+    assert_eq!(frame.zones().len(), 3);
+
+    // Центр куба: albedo материала 0 (RGBA8 sRGB) и ORM (RGBA8 UNORM).
+    let center = ((size / 2) * size + size / 2) as usize * 4;
+    let albedo = frame.readback(&mut device, FrameStage::Albedo).unwrap();
+    let expected = MATERIAL_PALETTE[0];
+    assert_eq!(albedo[center], quantize(expected[0]));
+    assert!(albedo[center + 1] <= 2, "green={}", albedo[center + 1]);
+    assert!(albedo[center + 2] <= 2, "blue={}", albedo[center + 2]);
+    assert_eq!(albedo[center + 3], 255);
+
+    let orm = frame.readback(&mut device, FrameStage::Orm).unwrap();
+    assert_eq!(orm[center], 255, "ao");
+    assert!(
+        (i32::from(orm[center + 1]) - quantize(0.4) as i32).abs() <= 2,
+        "roughness={}",
+        orm[center + 1]
+    );
+    assert!(orm[center + 2] <= 2, "metallic={}", orm[center + 2]);
+
+    // Reversed-Z: центр куба ближе (0 < depth < 1), фон очищен в 0.
+    let depth = frame.readback(&mut device, FrameStage::Depth).unwrap();
+    let read = |offset: usize| {
+        f32::from_bits(u32::from_le_bytes([
+            depth[offset],
+            depth[offset + 1],
+            depth[offset + 2],
+            depth[offset + 3],
+        ]))
+    };
+    let center_depth = read(center);
+    assert!(
+        center_depth > 0.0 && center_depth < 1.0,
+        "center depth={center_depth}"
+    );
+    assert_eq!(read(0), 0.0);
+
+    device.wait_idle().unwrap();
+    assert_eq!(
+        device.validation_errors(),
+        before,
+        "validation log is dirty"
+    );
+    geometry.destroy(&mut device);
+    frame.destroy(&mut device);
+    device.wait_idle().unwrap();
+    assert_eq!(device.live_resources(), 0);
 }

@@ -468,13 +468,11 @@ impl CommandBuffer for VulkanCommandBuffer {
                 target,
                 std::slice::from_ref(&region),
             );
-            // Делаем запись transfer видимой vertex/fragment-стадиям: следующий
+            // Делаем запись transfer видимой шейдерным стадиям: следующий
             // submit читает storage-буфер в vertex pulling.
             let barrier = vk::MemoryBarrier::default()
                 .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                .dst_access_mask(
-                    vk::AccessFlags::SHADER_READ | vk::AccessFlags::VERTEX_ATTRIBUTE_READ,
-                );
+                .dst_access_mask(vk::AccessFlags::SHADER_READ);
             self.context.device.cmd_pipeline_barrier(
                 self.command,
                 vk::PipelineStageFlags::TRANSFER,

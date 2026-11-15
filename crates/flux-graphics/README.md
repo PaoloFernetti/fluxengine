@@ -18,6 +18,7 @@ Roadmap: [docs/Roadmap.md](../../docs/Roadmap.md). API: [docs/api.md](../../docs
 | `render` | Transfer, ResourceRegistry, VramBudget | I2 ✅ |
 | `render::graph` | Render Graph, автоматические барьеры, aliasing, resize | I3 ✅ |
 | `render::scene` | `Camera` (camera-relative, Reversed-Z), `RenderScene` (SoA, alpha, extract) | I4 ✅ |
+| `render::geometry` | vertex pulling: unit-куб + инстансы в storage-буферах, `SceneGeometry` | I9h ✅ (4.5, ADR-0047) |
 | `render::cull` | camera-relative AABB против фрустума, `CullStats`/`SceneExtractStats`, бенч extract | I4b ✅ (4.5) |
 | `render::pbr` | `Material`, GGX/Smith/Fresnel/multiscatter, `evaluate_direct` | I5 ✅ (CPU-эталон) |
 | `render::gbuffer` | ABI ADR-0017: форматы RT0–RT2, depth, `GbufferLayout` | I5 ✅ |
@@ -117,6 +118,13 @@ flux-graphics = { workspace = true, features = ["vulkan"] }
   `tools/flux-assetc shader`). `tests/vulkan_pso.rs` собирает PSO, рисует
   треугольник в `Rgba8Srgb`-цель, проверяет descriptor set и clear-кадр
   через staging-readback; лог validation остаётся чистым.
+- Геометрия сцены (4.5, ADR-0047): `render::geometry::SceneGeometry` —
+  unit-куб (36 вершин) и инстансы (`capacity × 48 B`) в device-local
+  storage-буферах, выборка по `SV_VertexID`/`SV_InstanceID`, descriptor set 0
+  и push constants 64 B (view-projection). `GpuFrame::render_scene` заменяет
+  процедурный G-buffer на инстансы; материалы — палитра-заглушка.
+  `tests/vulkan_frame.rs::scene_geometry_fills_gbuffer` проверяет
+  albedo/ORM/depth куба; Null — upload и draw-команды.
 - Extract (4.5): `render::cull` отсекает инстансы по camera-relative AABB
   (`cull_instances`, `CullStats`), `RenderScene::extract(alpha, frustum)`
   совмещает интерполяцию и culling, отдаёт `visible_indices()` и
