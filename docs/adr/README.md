@@ -76,7 +76,7 @@ flowchart LR
 - Каждый термин из ADR обязан иметь запись в глоссарии канона
   (правило «термин имеет владельца»).
 
-## Индекс (ADR-0001…0027 — архитектурная фаза; 0028…0030 — этап 2; 0031…0033 — этап 3; 0034…0044 — этап 4/инструменты)
+## Индекс (ADR-0001…0027 — архитектурная фаза; 0028…0030 — этап 2; 0031…0033 — этап 3; 0034…0045 — этап 4/инструменты)
 
 | ADR | Решение | Источник |
 |---|---|---|
@@ -124,6 +124,7 @@ flowchart LR
 | 0042 | GPU-проходы кадра: push constants 64 B, `execute_with`/`compile_with_initial`, G-buffer → SSAO → lighting → bloom → tonemap → TAA, PSNR-эталон от readback предыдущего прохода | flux-graphics |
 | 0043 | `.unitypackage` в flux-assetc: gzip/tar (`flate2`, `tar`), staging, `pathname` → дерево `Assets/`, meta рядом, защита от traversal | tools/flux-assetc |
 | 0044 | Рантайм-применение `GraphicsSettings`: `FrameFeatures`, `SettingsRuntime`, нейтральные clear отключённых эффектов, `render_scale` в `graph` | flux-graphics |
+| 0045 | Образы swapchain как `ImageId`: acquire → `ColorAttachment`, present → `Present`, владение swapchain, инвалидация framebuffer-кэша | flux-graphics |
 
 Дополнительные решения, зафиксированные в плане, но не требующие отдельных
 ADR-файлов (частично покрыты выше): input abstraction (flux-platform),
@@ -168,6 +169,10 @@ undo × PIE × стриминг (flux-editor), golden-сейвы, virtual textur
 - ADR-0043 принимает `flate2` и `tar` только для build-time инструмента
   `tools/flux-assetc`; в рантайм-крейты они не попадают, лицензии уже в
   allowlist `deny.toml`.
+- ADR-0045 дополняет ADR-0034/0039: образы `VkSwapchainKHR` регистрируются в
+  реестре устройства с `owned: false` и используются как обычные `ImageId`;
+  `acquire` больше не переводит образ в `PRESENT_SRC_KHR` (это делает
+  `present`). Формулировки ADR-0034/0039 не переписываются.
 - FrameStats по пассам добавлен поверх ADR-0042 без нового ADR: `GpuFrame`
   использует query pools из ADR-0037 и отдаёт `GpuZone` через `zones()`,
   `pass_duration_ns()`, `frame_duration_ns()`; цепочка проходов и их форматы

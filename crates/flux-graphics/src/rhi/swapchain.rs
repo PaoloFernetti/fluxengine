@@ -1,8 +1,15 @@
 //! Контракт swapchain.
+//!
+//! Образы swapchain доступны как [`ImageId`] (ADR-0045): их можно указать
+//! цветовым аттачментом в [`RenderPassDesc`](super::RenderPassDesc), прочитать
+//! через копирование и представить. Образ принадлежит swapchain, а не
+//! вызывающему: [`RhiDevice::destroy_image`](super::RhiDevice::destroy_image)
+//! для него возвращает `false`, а хэндл перестаёт быть валидным после
+//! `resize`/уничтожения swapchain.
 
 use super::{
     error::RhiError,
-    types::{PresentMode, SwapchainDesc, SwapchainId, TextureFormat},
+    types::{ImageId, PresentMode, SwapchainDesc, SwapchainId, TextureFormat},
 };
 
 /// Цепочка представления, привязанная к окну/таргету.
@@ -22,6 +29,19 @@ pub trait Swapchain: Send {
     /// Число образов в цепочке.
     fn image_count(&self) -> usize;
 
+    /// Образ по индексу (валиден до `resize`/уничтожения swapchain).
+    ///
+    /// Образ зарегистрирован в устройстве как «принадлежащий swapchain»:
+    /// его можно использовать в render pass, барьерах и копировании, но
+    /// нельзя освобождать через `destroy_image`.
+    fn image(&self, index: u32) -> Option<ImageId>;
+
+    /// Образ, полученный последним [`Self::acquire`].
+    ///
+    /// После `acquire` образ находится в состоянии `ColorAttachment`; после
+    /// [`Self::present`] хэндл недействителен до следующего acquire.
+    fn acquired_image(&self) -> Option<ImageId>;
+
     /// Пересоздаёт изображения под новый размер.
     ///
     /// # Errors
@@ -36,7 +56,10 @@ pub trait Swapchain: Send {
     /// [`RhiError::Validation`] — предыдущий образ не представлен.
     fn acquire(&mut self) -> Result<u32, RhiError>;
 
-    /// Представляет образ на экран.
+    /// Переводит образ в `Present` и представляет его.
+    ///
+    /// Ожидает, что содержимое записано в образ как в `ColorAttachment`
+    /// (render pass или копирование с переходом в `ColorAttachment`).
     ///
     /// # Errors
     ///

@@ -47,6 +47,7 @@
 | 4 | I9c | GPU-проходы кадра: push constants, `RenderGraph::execute_with`/`compile_with_initial`, `render::frame::GpuFrame` (G-buffer → SSAO → lighting → bloom → tonemap → TAA), CPU-эталоны и PSNR-гейт (ADR-0042) |
 | 4 | I9d | FrameStats по пассам: timestamp-пары в `GpuFrame` (`zones`, `pass_duration_ns`, `frame_duration_ns`), `FRAME_QUERY_COUNT`/`FRAME_PASS_NAMES` (ADR-0037 + ADR-0042) |
 | 4 | I9e | Рантайм-применение `GraphicsSettings`: `FrameFeatures`, `SettingsRuntime`, feature-aware граф кадра, `render_scale` в `graph` (ADR-0044) |
+| 4 | I9f | Образы swapchain как `ImageId`: `Swapchain::image`/`acquired_image`, владение цепочкой, переходы `acquire`/`present` (ADR-0045) |
 | — | tool | `tools/flux-assetc unitypackage`: gzip/tar → дерево `Assets/`, meta рядом, защита от traversal, `--no-meta`/`--overwrite`/`--dry-run` (ADR-0043) |
 | — | release | `tools/flux-release`: Conventional Commits → semver, версия `Cargo.toml`, `CHANGELOG.md`, commit/annotated tag; pre-release, монорепо fixed/independent, opt-in publish/gh/semver-checks (ADR-0040) |
 
@@ -7363,6 +7364,38 @@ let index = swapchain.acquire().unwrap();
 swapchain.present(index).unwrap();
 ```
 
+#### `Swapchain::image(&self, index) -> Option<ImageId>`
+
+Образ цепочки как `ImageId` (ADR-0045): его можно указать цветовым
+аттачментом в `RenderPassDesc`, использовать в барьерах и копировании.
+Образ зарегистрирован в устройстве как «принадлежащий swapchain», поэтому
+`destroy_image` для него возвращает `false`; хэндл валиден до `resize` или
+уничтожения цепочки. Неверный индекс — `None`.
+
+```rust
+let mut device = NullDevice::new();
+let swapchain = device.create_swapchain(&SwapchainDesc::new("main", 64, 64)).unwrap();
+let image = swapchain.image(0).unwrap();
+assert!(!device.destroy_image(image));
+assert!(swapchain.image(99).is_none());
+```
+
+#### `Swapchain::acquired_image(&self) -> Option<ImageId>`
+
+Образ, полученный последним `acquire`. `acquire` переводит его в состояние
+`ColorAttachment`, `present` — в `Present`; до первого `acquire` и после
+`present` — `None`.
+
+```rust
+let mut device = NullDevice::new();
+let mut swapchain = device.create_swapchain(&SwapchainDesc::new("main", 64, 64)).unwrap();
+assert!(swapchain.acquired_image().is_none());
+let index = swapchain.acquire().unwrap();
+assert_eq!(swapchain.acquired_image(), swapchain.image(index));
+swapchain.present(index).unwrap();
+assert!(swapchain.acquired_image().is_none());
+```
+
 ### Барьеры ✅
 
 #### `ImageState`
@@ -10439,6 +10472,14 @@ https и ssh remote.
   `SettingsRuntime` (`new`, `apply`, `resize`, `destroy`, `swapchain_id`,
   `permutation_generation`) пересоздаёт только затронутые подсистемы,
   Device остаётся жив; `render_scale` входит в `SettingsChange::graph`.
+- **I9f (этап 4, ADR-0045)**: образы swapchain как `ImageId` —
+  `Swapchain::image(index)`/`acquired_image()`; образы регистрируются в
+  реестре устройства как «принадлежащие цепочке» (`destroy_image` → `false`,
+  хэндл недействителен после `resize`), `acquire` переводит
+  `Undefined → ColorAttachment`, `present` — `ColorAttachment → Present` и
+  вызывает `queue_present`; Vulkan инвалидирует framebuffer-кэш при
+  пересоздании образов. Null — тест `swapchain_image_is_renderable_and_readable`
+  (clear → copy → readback), Vulkan — `acquired_swapchain_image_is_a_render_target`.
 - **flux-assetc unitypackage (ADR-0043)**: `ExtractOptions`
   (`output`/`keep_meta`/`overwrite`/`dry_run`), `ExtractReport`
   (`assets`/`folders`/`skipped`/`bytes`/`paths`) и

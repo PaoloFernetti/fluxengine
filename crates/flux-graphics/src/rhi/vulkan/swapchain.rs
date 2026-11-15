@@ -13,9 +13,9 @@ use ash::vk;
 
 use super::super::error::RhiError;
 use super::super::swapchain::Swapchain;
-use super::super::types::{PresentMode, SwapchainDesc, SwapchainId, TextureFormat};
+use super::super::types::{ImageId, PresentMode, SwapchainDesc, SwapchainId, TextureFormat};
 use super::memory::Allocation;
-use super::{convert, DeviceContext};
+use super::{convert, DeviceContext, ImageEntry};
 
 struct SwapchainImage {
     image: vk::Image,
@@ -33,6 +33,8 @@ pub struct VulkanSwapchain {
     height: u32,
     frames_in_flight: u32,
     images: Vec<SwapchainImage>,
+    /// Хэндлы образов в реестре устройства (ADR-0045).
+    image_ids: Vec<ImageId>,
     acquired: Option<u32>,
     next: u32,
 }
@@ -71,6 +73,7 @@ impl VulkanSwapchain {
             height: desc.height,
             frames_in_flight: desc.frames_in_flight,
             images: Vec::new(),
+            image_ids: Vec::new(),
             acquired: None,
             next: 0,
         };
@@ -152,6 +155,24 @@ impl VulkanSwapchain {
                     return Err(convert::map_vk(error));
                 }
             };
+            let id = {
+                let mut store = self.context.store.lock();
+                let id = store.next_id();
+                store.images.insert(
+                    id,
+                    ImageEntry {
+                        image,
+                        view,
+                        width: self.width,
+                        height: self.height,
+                        format: self.format,
+                        allocation: None,
+                        owned: false,
+                    },
+                );
+                ImageId(id)
+            };
+            self.image_ids.push(id);
             self.images.push(SwapchainImage {
                 image,
                 view,
@@ -163,6 +184,16 @@ impl VulkanSwapchain {
 
     fn destroy_images(&mut self) {
         let device = &self.context.device;
+        let mut store = self.context.store.lock();
+        store.remove_swapchain_images(&self.image_ids);
+        self.image_ids.clear();
+        // Framebuffer-ы ссылаются на view, которые сейчас уничтожаются.
+        let framebuffers = store.take_framebuffers();
+        drop(store);
+        for framebuffer in framebuffers {
+            // SAFETY: framebuffer belongs to the store cache and is destroyed once.
+            unsafe { device.destroy_framebuffer(framebuffer, None) };
+        }
         let mut store = self.context.store.lock();
         for entry in self.images.drain(..) {
             // SAFETY: images are owned by this swapchain and freed once.
@@ -194,6 +225,14 @@ impl Swapchain for VulkanSwapchain {
 
     fn image_count(&self) -> usize {
         self.images.len()
+    }
+
+    fn image(&self, index: u32) -> Option<ImageId> {
+        self.image_ids.get(index as usize).copied()
+    }
+
+    fn acquired_image(&self) -> Option<ImageId> {
+        self.acquired.and_then(|index| self.image(index))
     }
 
     fn resize(&mut self, width: u32, height: u32) -> Result<(), RhiError> {
@@ -265,6 +304,8 @@ pub struct VulkanPresentSwapchain {
     frames_in_flight: u32,
     images: Vec<vk::Image>,
     views: Vec<vk::ImageView>,
+    /// Хэндлы образов в реестре устройства (ADR-0045).
+    image_ids: Vec<ImageId>,
     acquire_fence: vk::Fence,
     transition_fence: vk::Fence,
     acquired: Option<u32>,
@@ -332,6 +373,7 @@ impl VulkanPresentSwapchain {
             frames_in_flight: desc.frames_in_flight,
             images: Vec::new(),
             views: Vec::new(),
+            image_ids: Vec::new(),
             acquire_fence,
             transition_fence,
             acquired: None,
@@ -483,8 +525,30 @@ impl VulkanPresentSwapchain {
                 }
             }
         }
+        let image_ids = {
+            let mut store = self.context.store.lock();
+            let mut ids = Vec::with_capacity(images.len());
+            for (image, view) in images.iter().zip(&views) {
+                let id = store.next_id();
+                store.images.insert(
+                    id,
+                    ImageEntry {
+                        image: *image,
+                        view: *view,
+                        width: extent.width,
+                        height: extent.height,
+                        format: self.format,
+                        allocation: None,
+                        owned: false,
+                    },
+                );
+                ids.push(ImageId(id));
+            }
+            ids
+        };
         self.images = images;
         self.views = views;
+        self.image_ids = image_ids;
         self.swapchain = Some(swapchain);
         self.acquired = None;
         Ok(())
@@ -495,6 +559,17 @@ impl VulkanPresentSwapchain {
             return;
         };
         let device = &self.context.device;
+        {
+            let mut store = self.context.store.lock();
+            store.remove_swapchain_images(&self.image_ids);
+            self.image_ids.clear();
+            let framebuffers = store.take_framebuffers();
+            drop(store);
+            for framebuffer in framebuffers {
+                // SAFETY: framebuffer belongs to the store cache and is destroyed once.
+                unsafe { device.destroy_framebuffer(framebuffer, None) };
+            }
+        }
         for view in self.views.drain(..) {
             // SAFETY: views are owned by this swapchain and destroyed once.
             unsafe { device.destroy_image_view(view, None) };
@@ -526,6 +601,14 @@ impl Swapchain for VulkanPresentSwapchain {
 
     fn image_count(&self) -> usize {
         self.images.len()
+    }
+
+    fn image(&self, index: u32) -> Option<ImageId> {
+        self.image_ids.get(index as usize).copied()
+    }
+
+    fn acquired_image(&self) -> Option<ImageId> {
+        self.acquired.and_then(|index| self.image(index))
     }
 
     fn resize(&mut self, width: u32, height: u32) -> Result<(), RhiError> {
@@ -582,9 +665,15 @@ impl Swapchain for VulkanPresentSwapchain {
                 .wait_for_fences(&[self.acquire_fence], true, u64::MAX)
         }
         .map_err(convert::map_vk)?;
-        // Перед present образ обязан быть в PRESENT_SRC_KHR; содержимое не
-        // нужно, поэтому переход идёт из UNDEFINED (acquire его обнуляет).
-        self.transition_to_present(index)?;
+        // Образ отдаётся как ColorAttachment: Render Graph пишет в него
+        // напрямую (ADR-0045). Содержимое не нужно — переход из UNDEFINED.
+        self.transition_image(
+            index,
+            vk::ImageLayout::UNDEFINED,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            vk::PipelineStageFlags::TOP_OF_PIPE,
+            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+        )?;
         self.acquired = Some(index);
         Ok(index)
     }
@@ -605,6 +694,14 @@ impl Swapchain for VulkanPresentSwapchain {
             .ok_or(RhiError::Unsupported {
                 feature: "VK_KHR_swapchain",
             })?;
+        // Содержимое записано как ColorAttachment; перед present — PRESENT_SRC.
+        self.transition_image(
+            image_index,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            vk::ImageLayout::PRESENT_SRC_KHR,
+            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+        )?;
         let swapchains = [swapchain];
         let indices = [image_index];
         let info = vk::PresentInfoKHR::default()
@@ -624,8 +721,15 @@ impl Swapchain for VulkanPresentSwapchain {
 }
 
 impl VulkanPresentSwapchain {
-    /// Переводит образ в `PRESENT_SRC_KHR` одним одноразовым submit-ом.
-    fn transition_to_present(&self, image_index: u32) -> Result<(), RhiError> {
+    /// Переводит образ между layout-ами одним одноразовым submit-ом.
+    fn transition_image(
+        &self,
+        image_index: u32,
+        old_layout: vk::ImageLayout,
+        new_layout: vk::ImageLayout,
+        src_stage: vk::PipelineStageFlags,
+        dst_stage: vk::PipelineStageFlags,
+    ) -> Result<(), RhiError> {
         let Some(&image) = self.images.get(image_index as usize) else {
             return Err(RhiError::Surface("acquired image is out of range".into()));
         };
@@ -647,8 +751,8 @@ impl VulkanPresentSwapchain {
         // SAFETY: command buffer is fresh and not pending.
         unsafe { device.begin_command_buffer(command, &begin) }.map_err(convert::map_vk)?;
         let barrier = vk::ImageMemoryBarrier::default()
-            .old_layout(vk::ImageLayout::UNDEFINED)
-            .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+            .old_layout(old_layout)
+            .new_layout(new_layout)
             .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
             .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
             .image(image)
@@ -664,8 +768,8 @@ impl VulkanPresentSwapchain {
         unsafe {
             device.cmd_pipeline_barrier(
                 command,
-                vk::PipelineStageFlags::TOP_OF_PIPE,
-                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                src_stage,
+                dst_stage,
                 vk::DependencyFlags::empty(),
                 &[],
                 &[],

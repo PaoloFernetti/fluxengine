@@ -69,6 +69,16 @@ flux-graphics = { workspace = true, features = ["vulkan"] }
   (`VulkanPresentSwapchain` — acquire через fence, переход образа в
   `PRESENT_SRC_KHR`, `queue_present`, resize с ожиданием idle). `SwapchainDesc::with_surface`
   привязывает цепочку к поверхности.
+- Образы swapchain как `ImageId` (ADR-0045): `Swapchain::image(index)` и
+  `acquired_image()`; образы регистрируются в реестре устройства как
+  «принадлежащие цепочке» (`destroy_image` → `false`, `ImageEntry::owned =
+  false`), поэтому их нельзя освободить вручную, а хэндл инвалидируется при
+  `resize`. `acquire` переводит образ `Undefined → ColorAttachment`,
+  `present` — `ColorAttachment → Present` перед `queue_present`; при
+  пересоздании образов framebuffer-кэш уничтожается. Null регистрирует
+  `frames_in_flight` образов в общем реестре, тест
+  `swapchain_image_is_renderable_and_readable` проверяет срез
+  «acquire → clear → copy → readback → present».
 - `create_pipeline` (I5) собирает реальные graphics/compute PSO из SPIR-V:
   shader modules, `PipelineLayout` без дескрипторов, vertex input
   `R32G32B32_SFLOAT` (stride 12), dynamic viewport/scissor, blend disable.

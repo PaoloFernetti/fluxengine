@@ -52,7 +52,7 @@ jobs:
       - name: shader artifacts + PSO smoke (Vulkan if available)
         run: cargo test -p flux-graphics --features vulkan --test vulkan_pso
 
-      - name: fetch DXC (pinned, SHA-256)
+      - name: fetch DXC (latest, SHA-256)
         run: node tools/dxc/fetch.mjs
 
       - name: compile shaders with DXC (smoke)

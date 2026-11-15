@@ -605,9 +605,13 @@ deadzone не теряет диапазон (rescale); rebinding roundtrip че�
       culling, переиспользование буферов, `push_with_bounds`
 - [x] Бюджет extract: criterion `benches/extract.rs`, 10 000 инстансов —
       ~37.7 мкс (порог 1 мс, запас ~26×)
+- [x] Контракт RHI: образы swapchain как `ImageId` — `image`/`acquired_image`,
+      acquire → `ColorAttachment`, present → `Present`, владение цепочкой
+      (ADR-0045); Null-тест clear → readback → present, Vulkan — clear в
+      acquired-образ
 - [ ] GPU-пайплайн: vertex pulling `SV_VertexID` → G-buffer → deferred
-      lighting → UI-stub → present (нужен DXC для новых SPIR-V и контракт
-      образа swapchain в RHI)
+      lighting → UI-stub → present (DXC и контракт образа готовы; осталась
+      геометрия сцены и UI-stub)
 
 **Приёмка**: extract ≤ 1 мс на эталонной сцене — criterion-бенч
 `crates/flux-graphics/benches/extract.rs` даёт ~37.7 мкс на 10 000 инстансов;

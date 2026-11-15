@@ -18,7 +18,7 @@ use super::{
         DescriptorResource, DescriptorSetDesc, DescriptorSetId, DescriptorWrite, DeviceSignature,
         GpuBufferDesc, GpuImageDesc, ImageId, PipelineDesc, PipelineId, PresentMode, QueryPoolDesc,
         QueryPoolId, RenderPassDesc, SamplerDesc, SamplerId, SurfaceId, SurfaceKind, SurfaceTarget,
-        SwapchainDesc, SwapchainId, TextureFormat,
+        SwapchainDesc, SwapchainId, TextureFormat, TextureUsage,
     },
     vram::{BudgetSnapshot, Pressure, VramAllocator, VramLease},
 };
@@ -39,8 +39,17 @@ struct NullImage {
 
 type SharedMemory = Arc<Mutex<NullMemory>>;
 
+/// Образы swapchain (ADR-0045): принадлежат цепочке, а не устройству.
+type SharedSwapchainImages = Arc<Mutex<BTreeMap<u64, GpuImageDesc>>>;
+
 fn lock_memory(memory: &SharedMemory) -> MutexGuard<'_, NullMemory> {
     memory
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn lock_images(images: &SharedSwapchainImages) -> MutexGuard<'_, BTreeMap<u64, GpuImageDesc>> {
+    images
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
@@ -196,6 +205,8 @@ pub struct NullDevice {
     next_descriptor_set: u64,
     buffers: BTreeMap<u64, GpuBufferDesc>,
     images: BTreeMap<u64, GpuImageDesc>,
+    /// Образы swapchain: освобождаются вместе с цепочкой (`Drop`).
+    swapchain_images: SharedSwapchainImages,
     samplers: BTreeMap<u64, SamplerDesc>,
     pipelines: BTreeMap<u64, PipelineDesc>,
     /// Эмуляция блоба `VkPipelineCache`: Null хранит его без разбора.
@@ -232,6 +243,7 @@ impl NullDevice {
             next_descriptor_set: 0,
             buffers: BTreeMap::new(),
             images: BTreeMap::new(),
+            swapchain_images: Arc::new(Mutex::new(BTreeMap::new())),
             samplers: BTreeMap::new(),
             pipelines: BTreeMap::new(),
             pipeline_cache: Vec::new(),
@@ -630,6 +642,9 @@ impl RhiDevice for NullDevice {
             .iter()
             .map(|(id, set)| (*id, set.bindings.clone()))
             .collect();
+        // Образы swapchain тоже валидны для render pass/копирования (ADR-0045).
+        let mut images: BTreeSet<u64> = self.images.keys().copied().collect();
+        images.extend(lock_images(&self.swapchain_images).keys().copied());
         Ok(Box::new(
             NullCommandBuffer::with_resources(
                 self.query_pools.clone(),
@@ -637,7 +652,7 @@ impl RhiDevice for NullDevice {
                     .iter()
                     .map(|(id, desc)| (*id, desc.usage))
                     .collect(),
-                self.images.keys().copied().collect(),
+                images,
                 descriptor_sets,
             )
             .with_memory(self.memory.clone()),
@@ -667,7 +682,17 @@ impl RhiDevice for NullDevice {
         }
         let id = SwapchainId(self.next_swapchain);
         self.next_swapchain = self.next_swapchain.wrapping_add(1);
-        Ok(Box::new(NullSwapchain::new(id, *desc)))
+        let mut images = Vec::with_capacity(desc.frames_in_flight as usize);
+        for _ in 0..desc.frames_in_flight {
+            images.push(self.create_swapchain_image(desc.width, desc.height, desc.format)?);
+        }
+        Ok(Box::new(NullSwapchain::new(
+            id,
+            *desc,
+            images,
+            self.swapchain_images.clone(),
+            self.memory.clone(),
+        )))
     }
 
     fn wait_idle(&mut self) -> Result<(), RhiError> {
@@ -675,7 +700,48 @@ impl RhiDevice for NullDevice {
     }
 }
 
+/// Использование образов swapchain в Null: цветовой таргет + readback.
+fn swapchain_usage() -> TextureUsage {
+    TextureUsage {
+        render_target: true,
+        sampled: true,
+        transfer_src: true,
+        ..TextureUsage::none()
+    }
+}
+
+impl NullDevice {
+    /// Создаёт образ swapchain в общем реестре (без лизинга VRAM: бюджет
+    /// swapchain учитывается отдельно, как и в Vulkan).
+    fn create_swapchain_image(
+        &mut self,
+        width: u32,
+        height: u32,
+        format: TextureFormat,
+    ) -> Result<ImageId, RhiError> {
+        let desc = GpuImageDesc::new("swapchain-image", width, height, format)
+            .with_usage(swapchain_usage());
+        let bytes = Self::image_bytes(&desc);
+        let byte_len = usize::try_from(bytes)
+            .map_err(|_| RhiError::validation("image size exceeds address space"))?;
+        let id = self.next_image;
+        self.next_image = self.next_image.wrapping_add(1);
+        lock_memory(&self.memory).images.insert(
+            id,
+            NullImage {
+                desc,
+                bytes: vec![0; byte_len],
+            },
+        );
+        lock_images(&self.swapchain_images).insert(id, desc);
+        Ok(ImageId(id))
+    }
+}
+
 /// Null-swapchain: циклически выдаёт индексы кадров.
+///
+/// Образы зарегистрированы в устройстве как образы swapchain (ADR-0045):
+/// пригодны для render pass/копирования, освобождаются в `Drop`.
 pub struct NullSwapchain {
     id: SwapchainId,
     width: u32,
@@ -683,12 +749,21 @@ pub struct NullSwapchain {
     format: TextureFormat,
     present_mode: PresentMode,
     frames_in_flight: u32,
+    images: Vec<ImageId>,
+    images_registry: SharedSwapchainImages,
+    memory: SharedMemory,
     acquired: Option<u32>,
     frame: u64,
 }
 
 impl NullSwapchain {
-    fn new(id: SwapchainId, desc: SwapchainDesc) -> Self {
+    fn new(
+        id: SwapchainId,
+        desc: SwapchainDesc,
+        images: Vec<ImageId>,
+        images_registry: SharedSwapchainImages,
+        memory: SharedMemory,
+    ) -> Self {
         Self {
             id,
             width: desc.width,
@@ -696,8 +771,22 @@ impl NullSwapchain {
             format: desc.format,
             present_mode: desc.present_mode,
             frames_in_flight: desc.frames_in_flight,
+            images,
+            images_registry,
+            memory,
             acquired: None,
             frame: 0,
+        }
+    }
+}
+
+impl Drop for NullSwapchain {
+    fn drop(&mut self) {
+        let mut registry = lock_images(&self.images_registry);
+        let mut memory = lock_memory(&self.memory);
+        for image in self.images.drain(..) {
+            registry.remove(&image.0);
+            memory.images.remove(&image.0);
         }
     }
 }
@@ -720,12 +809,34 @@ impl Swapchain for NullSwapchain {
     }
 
     fn image_count(&self) -> usize {
-        self.frames_in_flight as usize
+        self.images.len()
+    }
+
+    fn image(&self, index: u32) -> Option<ImageId> {
+        self.images.get(index as usize).copied()
+    }
+
+    fn acquired_image(&self) -> Option<ImageId> {
+        self.acquired.and_then(|index| self.image(index))
     }
 
     fn resize(&mut self, width: u32, height: u32) -> Result<(), RhiError> {
         if width == 0 || height == 0 {
             return Err(RhiError::validation("swapchain size must be non-zero"));
+        }
+        let desc = GpuImageDesc::new("swapchain-image", width, height, self.format)
+            .with_usage(swapchain_usage());
+        let bytes = NullDevice::image_bytes(&desc);
+        let byte_len = usize::try_from(bytes)
+            .map_err(|_| RhiError::validation("image size exceeds address space"))?;
+        let mut registry = lock_images(&self.images_registry);
+        let mut memory = lock_memory(&self.memory);
+        for image in &self.images {
+            registry.insert(image.0, desc);
+            if let Some(entry) = memory.images.get_mut(&image.0) {
+                entry.desc = desc;
+                entry.bytes = vec![0; byte_len];
+            }
         }
         self.width = width;
         self.height = height;
@@ -1158,6 +1269,54 @@ mod tests {
         swapchain.present(second).unwrap();
         swapchain.resize(800, 600).unwrap();
         assert_eq!(swapchain.size(), (800, 600));
+    }
+
+    #[test]
+    fn swapchain_image_is_renderable_and_readable() {
+        let mut device = NullDevice::new();
+        let mut swapchain = device
+            .create_swapchain(&SwapchainDesc::new("main", 4, 4))
+            .unwrap();
+        let index = swapchain.acquire().unwrap();
+        let image = swapchain.acquired_image().expect("acquired image");
+        assert_eq!(swapchain.image(index), Some(image));
+        // Образ принадлежит swapchain: устройство его не освобождает.
+        assert!(!device.destroy_image(image));
+
+        let mut commands = device.create_command_buffer().unwrap();
+        commands.begin().unwrap();
+        let pass = RenderPassDesc::new("present-clear")
+            .with_color(image)
+            .with_clear([0.0, 1.0, 0.0, 1.0]);
+        commands.begin_render_pass(&pass).unwrap();
+        commands.end_render_pass().unwrap();
+        commands.end().unwrap();
+        commands.finish().unwrap();
+        device.wait_idle().unwrap();
+
+        let buffer = device
+            .create_buffer(&GpuBufferDesc::new(
+                "readback",
+                4 * 4 * 4,
+                BufferUsage::staging(),
+            ))
+            .unwrap();
+        let mut commands = device.create_command_buffer().unwrap();
+        commands.begin().unwrap();
+        let mut batch = BarrierBatch::new();
+        batch.transition(image, ImageState::ColorAttachment, ImageState::TransferSrc);
+        commands.barriers(&batch).unwrap();
+        commands.copy_image_to_buffer(image, buffer).unwrap();
+        commands.end().unwrap();
+        commands.finish().unwrap();
+        device.wait_idle().unwrap();
+        let bytes = device.read_buffer(buffer).unwrap();
+        assert_eq!(&bytes[0..4], &[0, 255, 0, 255]);
+        assert!(device.destroy_buffer(buffer));
+
+        swapchain.present(index).unwrap();
+        assert!(swapchain.acquired_image().is_none());
+        drop(swapchain);
     }
 
     #[test]

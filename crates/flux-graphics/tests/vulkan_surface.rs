@@ -9,7 +9,9 @@
 #![cfg(feature = "vulkan")]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use flux_graphics::{RhiDevice, SurfaceTarget, SwapchainDesc, TextureFormat, VulkanDevice};
+use flux_graphics::{
+    RenderPassDesc, RhiDevice, SurfaceTarget, SwapchainDesc, TextureFormat, VulkanDevice,
+};
 
 fn runtime_device() -> Option<VulkanDevice> {
     match VulkanDevice::new() {
@@ -69,4 +71,50 @@ fn headless_surface_swapchain_presents_and_resizes() {
     drop(swapchain);
     assert!(device.destroy_surface(surface));
     assert!(!device.destroy_surface(surface));
+}
+
+#[test]
+fn acquired_swapchain_image_is_a_render_target() {
+    let Some(mut device) = runtime_device() else {
+        return;
+    };
+    let before = device.validation_errors();
+    let surface = match device.create_surface(&SurfaceTarget::Headless) {
+        Ok(surface) => surface,
+        Err(error) => {
+            if std::env::var_os("FLUX_REQUIRE_VULKAN").is_some() {
+                panic!("FLUX_REQUIRE_VULKAN is set, but headless surface is unavailable: {error}");
+            }
+            eprintln!("skipping swapchain image test: {error}");
+            return;
+        }
+    };
+
+    let desc = SwapchainDesc::new("headless-image", 64, 48)
+        .with_format(TextureFormat::Bgra8Srgb)
+        .with_surface(surface);
+    let mut swapchain = device.create_swapchain(&desc).unwrap();
+    let index = swapchain.acquire().unwrap();
+    let image = swapchain.acquired_image().expect("acquired image");
+    assert_eq!(swapchain.image(index), Some(image));
+    // Образ принадлежит swapchain, устройство его не освобождает.
+    assert!(!device.destroy_image(image));
+
+    let mut commands = device.create_command_buffer().unwrap();
+    commands.begin().unwrap();
+    let pass = RenderPassDesc::new("present-clear")
+        .with_color(image)
+        .with_clear([0.0, 0.0, 1.0, 1.0]);
+    commands.begin_render_pass(&pass).unwrap();
+    commands.end_render_pass().unwrap();
+    commands.end().unwrap();
+    commands.finish().unwrap();
+    device.wait_idle().unwrap();
+
+    swapchain.present(index).unwrap();
+    assert!(swapchain.acquired_image().is_none());
+    assert_eq!(device.validation_errors(), before);
+
+    drop(swapchain);
+    assert!(device.destroy_surface(surface));
 }

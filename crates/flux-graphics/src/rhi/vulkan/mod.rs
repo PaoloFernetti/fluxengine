@@ -89,12 +89,17 @@ impl DeviceContext {
             store.memory.free(device, entry.allocation);
         }
         for (_, entry) in std::mem::take(&mut store.images) {
-            // SAFETY: resource is owned by the store and destroyed exactly once.
-            unsafe {
-                device.destroy_image_view(entry.view, None);
-                device.destroy_image(entry.image, None);
+            // Образы swapchain освобождает сама цепочка (ADR-0045).
+            if entry.owned {
+                // SAFETY: resource is owned by the store and destroyed exactly once.
+                unsafe {
+                    device.destroy_image_view(entry.view, None);
+                    device.destroy_image(entry.image, None);
+                }
             }
-            store.memory.free(device, entry.allocation);
+            if let Some(allocation) = entry.allocation {
+                store.memory.free(device, allocation);
+            }
         }
         for (_, entry) in std::mem::take(&mut store.pipelines) {
             // SAFETY: pipeline, layout and modules are owned by the store.
@@ -191,7 +196,10 @@ pub(crate) struct ImageEntry {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) format: TextureFormat,
-    pub(crate) allocation: Allocation,
+    /// Аллокация устройства; `None` — образ принадлежит swapchain (ADR-0045).
+    pub(crate) allocation: Option<Allocation>,
+    /// `true` — образ создан `create_image`; `false` — образ swapchain.
+    pub(crate) owned: bool,
 }
 
 /// Запись pipeline в реестре ресурсов.
@@ -306,6 +314,21 @@ impl ResourceStore {
             kind: "image",
             id: id.0,
         })
+    }
+
+    /// Удаляет регистрацию образов swapchain (сами `VkImage` им не принадлежат).
+    pub(crate) fn remove_swapchain_images(&mut self, ids: &[ImageId]) {
+        for id in ids {
+            self.images.remove(&id.0);
+        }
+    }
+
+    /// Забирает кэш framebuffer-ов: после пересоздания образов swapchain
+    /// старые `VkFramebuffer` ссылаются на уничтоженные view.
+    pub(crate) fn take_framebuffers(&mut self) -> Vec<vk::Framebuffer> {
+        std::mem::take(&mut self.framebuffers)
+            .into_values()
+            .collect()
     }
 
     /// Pipeline по хэндлу.
@@ -1124,14 +1147,24 @@ impl RhiDevice for VulkanDevice {
                 width: desc.width,
                 height: desc.height,
                 format: desc.format,
-                allocation,
+                allocation: Some(allocation),
+                owned: true,
             },
         );
         Ok(ImageId(id))
     }
 
     fn destroy_image(&mut self, id: ImageId) -> bool {
-        let Some(entry) = self.context.store.lock().images.remove(&id.0) else {
+        // Образы swapchain не освобождаются через устройство (ADR-0045).
+        let removed = {
+            let mut store = self.context.store.lock();
+            if store.images.get(&id.0).is_some_and(|entry| entry.owned) {
+                store.images.remove(&id.0)
+            } else {
+                None
+            }
+        };
+        let Some(entry) = removed else {
             return false;
         };
         // SAFETY: entry is owned by the store and removed above.
@@ -1139,11 +1172,13 @@ impl RhiDevice for VulkanDevice {
             self.context.device.destroy_image_view(entry.view, None);
             self.context.device.destroy_image(entry.image, None);
         }
-        self.context
-            .store
-            .lock()
-            .memory
-            .free(&self.context.device, entry.allocation);
+        if let Some(allocation) = entry.allocation {
+            self.context
+                .store
+                .lock()
+                .memory
+                .free(&self.context.device, allocation);
+        }
         true
     }
 
