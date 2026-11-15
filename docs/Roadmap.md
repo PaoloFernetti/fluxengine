@@ -615,15 +615,16 @@ deadzone не теряет диапазон (rescale); rebinding roundtrip че�
 - [x] GPU-геометрия: vertex pulling `SV_VertexID`/`SV_InstanceID` →
       G-buffer — unit-куб и инстансы в storage-буферах, `SceneGeometry`,
       `GpuFrame::render_scene`; Vulkan-тест albedo/ORM/depth (ADR-0047)
-- [ ] GPU-пайплайн: UI-stub пасс → present в образ swapchain (deferred
-      lighting уже в `GpuFrame`; остались UI-stub и вывод в acquired-образ)
+- [x] UI-stub и present: проход `frame.ui` читает tonemap/TAA-выход и пишет
+      в acquired-образ swapchain, `GpuFrame::render_to`/`present`; Vulkan-тест
+      панели и чистого validation (ADR-0048)
 
 **Приёмка**: extract ≤ 1 мс на эталонной сцене — criterion-бенч
 `crates/flux-graphics/benches/extract.rs` даёт ~37.7 мкс на 10 000 инстансов;
-камера не теряет точность на дистанции. FrameStats по пассам — в 4.9,
-camera-relative в тенях/IBL/скайбоксе — в 4.6: там появятся сами проходы.
-GPU-геометрия и present требуют шейдерного тулчейна (DXC) и доступа к образу
-swapchain — отдельные шаги после 4.6/4.9.
+камера не теряет точность на дистанции. GPU-цепочка «vertex pulling →
+G-buffer → deferred lighting → UI-stub → present» работает на Vulkan
+(ADR-0047/0048); FrameStats по пассам — в 4.9, camera-relative в
+тенях/IBL/скайбоксе — в 4.6: там появятся сами проходы.
 
 ### 4.6 PBR и G-buffer
 

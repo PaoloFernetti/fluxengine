@@ -125,6 +125,14 @@ flux-graphics = { workspace = true, features = ["vulkan"] }
   процедурный G-buffer на инстансы; материалы — палитра-заглушка.
   `tests/vulkan_frame.rs::scene_geometry_fills_gbuffer` проверяет
   albedo/ORM/depth куба; Null — upload и draw-команды.
+- UI-stub и present (4.5, ADR-0048): `GpuFrame::render_to` добавляет проход
+  `frame.ui` — читает tonemap/TAA-выход, рисует панель-заглушку и пишет в
+  acquired-образ swapchain; `GpuFrame::present` = acquire → render → present.
+  Pipeline вывода создаётся под формат цепочки (`Bgra8Srgb`/`Rgba8Srgb`),
+  набор перепривязывается к текущему выходу TAA. Проход не входит в
+  FrameStats (пул остаётся 12 запросов). Vulkan-тест
+  `ui_stub_is_presented_to_swapchain`: панель темнее эталонного кадра без UI,
+  вне панели кадры совпадают, validation чистый.
 - Extract (4.5): `render::cull` отсекает инстансы по camera-relative AABB
   (`cull_instances`, `CullStats`), `RenderScene::extract(alpha, frustum)`
   совмещает интерполяцию и culling, отдаёт `visible_indices()` и

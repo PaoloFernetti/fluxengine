@@ -61,6 +61,7 @@ Vulkan — primary dev-бэкенд (CI-гейты headless/golden живут н
 | `RhiDevice` | Графическое устройство (Vulkan/DX12 за trait); создаёт flux-engine, живут дольше рендереров | flux-graphics/rhi |
 | `RenderScene` | SoA-снапшот ECS-кадра для рендера (camera-relative f32 + alpha) | flux-graphics/render/scene |
 | `PresentTarget` | Выход кадра: swapchain или RTT-текстура (editor) | flux-graphics/render |
+| `UI-stub` | Панель-заглушка финального прохода `frame.ui`: проверяет, что оверлей попадает в presented-кадр (ADR-0048) | flux-graphics/render/frame |
 | `RenderBackend` | Per-viewport рендерер: configure / rebuild_graph / render_frame | flux-graphics/render |
 | `Render Graph` | Декларативный граф пассов кадра; barrier-и, aliasing, async compute | flux-graphics/render/graph |
 | `Pass-фабрика` | Регистрируемый провайдер пассов (UI, egui, debug-draw) | flux-graphics/render/graph |

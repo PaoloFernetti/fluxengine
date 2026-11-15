@@ -50,6 +50,7 @@
 | 4 | I9f | Образы swapchain как `ImageId`: `Swapchain::image`/`acquired_image`, владение цепочкой, переходы `acquire`/`present` (ADR-0045) |
 | 4 | I9g | Копирование buffer→buffer: `copy_buffer_to_buffer`, upload staging → device-local storage, барьер `TRANSFER_WRITE → SHADER_READ` (ADR-0046) |
 | 4 | I9h | GPU-геометрия сцены: `SceneGeometry` (vertex pulling `SV_VertexID`/`SV_InstanceID`), `GpuFrame::render_scene`, unit-куб и инстансы в storage-буферах (ADR-0047) |
+| 4 | I9i | UI-stub и present: проход `frame.ui` читает tonemap/TAA-выход и пишет в acquired-образ swapchain, `GpuFrame::render_to`/`present` (ADR-0048) |
 | — | tool | `tools/flux-assetc unitypackage`: gzip/tar → дерево `Assets/`, meta рядом, защита от traversal, `--no-meta`/`--overwrite`/`--dry-run` (ADR-0043) |
 | — | release | `tools/flux-release`: Conventional Commits → semver, версия `Cargo.toml`, `CHANGELOG.md`, commit/annotated tag; pre-release, монорепо fixed/independent, opt-in publish/gh/semver-checks (ADR-0040) |
 
@@ -8915,6 +8916,19 @@ vertex pulling (ADR-0047) вместо процедурного полноэкр
 Push constants G-buffer-прохода — `camera.view_projection()` (64 B);
 остальные проходы не меняются.
 
+#### `GpuFrame::render_to(&mut self, device, params, target, target_format) -> Result<(), RhiError>`
+
+Кадр с финальным проходом `frame.ui` (ADR-0048): читает tonemap/TAA-выход,
+рисует UI-stub (панель 30% × 25% в левом верхнем углу) и пишет в `target`.
+Состояние `target` считается `ColorAttachment` — образ только что получен
+`Swapchain::acquire`. Pipeline вывода создаётся под `target_format`
+(`Bgra8Srgb`/`Rgba8Srgb`, иначе `Unsupported`) и пересоздаётся при смене.
+
+#### `GpuFrame::present(&mut self, device, params, swapchain) -> Result<u32, RhiError>`
+
+`acquire` → `render_to(acquired_image, swapchain.format())` → `present(index)`;
+возвращает индекс представленного образа. Формат pipeline берётся из цепочки.
+
 #### `GpuFrame::stage(&self, stage) -> (ImageId, ImageState, u32)`
 
 Изображение, его текущее состояние и байт на пиксель для `FrameStage`:
@@ -8940,7 +8954,8 @@ Push constants G-buffer-прохода — `camera.view_projection()` (64 B);
 сбрасывает пул в начале кадра и читает после `wait_idle`. Полный порядок имён
 фиксирован: `FRAME_PASS_NAMES = ["frame.gbuffer", "frame.ssao",
 "frame.lighting", "frame.bloom", "frame.tonemap", "frame.taa"]`; `zones()`
-содержит только проходы из `FrameFeatures::pass_names()`.
+содержит только проходы из `FrameFeatures::pass_names()`. Проход `frame.ui`
+(ADR-0048) в пул не входит — пул остаётся 12 запросов.
 Неактивные слоты закрываются парой нулевых диапазонов: `read_query_pool`
 читает весь пул с `WAIT`, а незаписанный запрос на Vulkan никогда не станет
 доступным (иначе `FrameFeatures::none()` зависает на реальном GPU).
@@ -10593,6 +10608,15 @@ https и ssh remote.
   `scene_geometry_fills_gbuffer` (albedo/ORM/depth центра куба). Попутно
   закрыты неактивные timestamp-слоты: `read_query_pool(WAIT)` зависал при
   `FrameFeatures::none()` на реальном GPU.
+- **I9i (этап 4, ADR-0048)**: UI-stub и present — `GpuFrame::render_to`
+  добавляет в граф `frame.ui` (`read` финального выхода, `color` цели),
+  `GpuFrame::present` = acquire → render → present; pipeline `frame-ui`
+  создаётся под формат цепочки (`Bgra8Srgb`/`Rgba8Srgb`, иначе
+  `Unsupported`), набор перепривязывается к текущему выходу TAA. UI-stub —
+  панель 30% × 25% с blend 0.8; проход не входит в FrameStats. Тесты: Null
+  `null_frame_presents_ui_stub_to_swapchain`, Vulkan
+  `ui_stub_is_presented_to_swapchain` (панель темнее эталона, вне панели
+  кадры совпадают, validation чистый).
 - **flux-assetc unitypackage (ADR-0043)**: `ExtractOptions`
   (`output`/`keep_meta`/`overwrite`/`dry_run`), `ExtractReport`
   (`assets`/`folders`/`skipped`/`bytes`/`paths`) и

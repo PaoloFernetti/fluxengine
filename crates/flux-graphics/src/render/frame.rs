@@ -25,7 +25,7 @@ use super::super::rhi::{
     BarrierBatch, BindingKind, BufferUsage, CommandBuffer, DescriptorBinding, DescriptorSetDesc,
     DescriptorSetId, DescriptorWrite, FilterMode, GpuBufferDesc, GpuImageDesc, ImageId, ImageState,
     PipelineDesc, PipelineId, QueryPoolDesc, QueryPoolId, RenderPassDesc, RhiDevice, RhiError,
-    SamplerDesc, SamplerId, TextureFormat, TextureUsage,
+    SamplerDesc, SamplerId, Swapchain, TextureFormat, TextureUsage,
 };
 use super::gbuffer::{GbufferLayout, COLOR_ATTACHMENTS};
 use super::geometry::{scene_push_constants, SceneGeometry};
@@ -42,6 +42,7 @@ const LIGHTING_FS: &[u8] = include_bytes!("../../shaders/compiled/frame_lighting
 const BLOOM_FS: &[u8] = include_bytes!("../../shaders/compiled/frame_bloom.frag.spv");
 const TONEMAP_FS: &[u8] = include_bytes!("../../shaders/compiled/frame_tonemap.frag.spv");
 const TAA_FS: &[u8] = include_bytes!("../../shaders/compiled/frame_taa.frag.spv");
+const UI_FS: &[u8] = include_bytes!("../../shaders/compiled/frame_ui.frag.spv");
 
 /// Размер блока push constants кадра, байт (4 × float4).
 pub const FRAME_PUSH_CONSTANT_BYTES: u32 = 64;
@@ -272,6 +273,14 @@ struct FrameSets {
     taa: DescriptorSetId,
 }
 
+/// Вывод в образ swapchain: pipeline под формат цепочки и набор с финальным
+/// изображением кадра (ADR-0048).
+struct PresentOutput {
+    format: TextureFormat,
+    pipeline: PipelineId,
+    set: DescriptorSetId,
+}
+
 /// Кадр GPU: изображения, pipeline-ы и дескрипторные наборы.
 pub struct GpuFrame {
     width: u32,
@@ -289,6 +298,8 @@ pub struct GpuFrame {
     history_is_a: bool,
     /// Активные эффекты кадра (ADR-0044).
     features: FrameFeatures,
+    /// UI-stub + вывод в acquired-образ swapchain (ADR-0048).
+    present: Option<PresentOutput>,
     /// Фактические состояния изображений (для `oldLayout` барьеров).
     states: BTreeMap<GraphImageKey, ImageState>,
     sampler: SamplerId,
@@ -562,6 +573,7 @@ impl GpuFrame {
             taa_b,
             history_is_a: true,
             features,
+            present: None,
             states,
             sampler,
             pipelines: FramePipelines {
@@ -740,7 +752,51 @@ impl GpuFrame {
             instances: geometry.instance_count(),
             push: scene_push_constants(&camera.view_projection()),
         };
-        self.render_inner(device, params, Some(&scene))
+        self.render_inner(device, params, Some(&scene), None)
+    }
+
+    /// Рисует кадр и выводит его в acquired-образ swapchain (ADR-0048).
+    ///
+    /// Финальный проход `frame.ui` читает tonemap/TAA-выход, рисует UI-stub
+    /// (панель 30% × 25% в левом верхнем углу) и пишет в `target` формата
+    /// `target_format`. Состояние `target` считается `ColorAttachment`
+    /// (образ только что получен через [`Swapchain::acquire`]).
+    ///
+    /// # Errors
+    ///
+    /// Ошибка RHI: неподдержанный формат цели, pipeline или команды.
+    pub fn render_to(
+        &mut self,
+        device: &mut dyn RhiDevice,
+        params: &FrameParams,
+        target: ImageId,
+        target_format: TextureFormat,
+    ) -> Result<(), RhiError> {
+        self.render_inner(device, params, None, Some((target, target_format)))
+    }
+
+    /// Acquire → кадр с UI-stub в образ цепочки → present (ADR-0048).
+    ///
+    /// Возвращает индекс представленного образа. Формат pipeline вывода
+    /// берётся из [`Swapchain::format`] и пересоздаётся при его смене.
+    ///
+    /// # Errors
+    ///
+    /// Ошибка acquire/present или рендера кадра.
+    pub fn present(
+        &mut self,
+        device: &mut dyn RhiDevice,
+        params: &FrameParams,
+        swapchain: &mut dyn Swapchain,
+    ) -> Result<u32, RhiError> {
+        let index = swapchain.acquire()?;
+        let image = swapchain
+            .acquired_image()
+            .ok_or_else(|| RhiError::validation("swapchain has no acquired image"))?;
+        let format = swapchain.format();
+        self.render_to(device, params, image, format)?;
+        swapchain.present(index)?;
+        Ok(index)
     }
 
     /// Рисует кадр: барьеры и тела пассов из Render Graph.
@@ -753,7 +809,7 @@ impl GpuFrame {
         device: &mut dyn RhiDevice,
         params: &FrameParams,
     ) -> Result<(), RhiError> {
-        self.render_inner(device, params, None)
+        self.render_inner(device, params, None, None)
     }
 
     fn render_inner(
@@ -761,6 +817,7 @@ impl GpuFrame {
         device: &mut dyn RhiDevice,
         params: &FrameParams,
         scene: Option<&SceneDraw>,
+        target: Option<(ImageId, TextureFormat)>,
     ) -> Result<(), RhiError> {
         let (history, output) = if self.features.taa {
             if self.history_is_a {
@@ -777,7 +834,13 @@ impl GpuFrame {
         } else {
             output
         };
-        let graph = self.frame_graph(history, output)?;
+        if let Some((image, format)) = target {
+            // Acquired-образ цепочки уже в ColorAttachment (ADR-0045).
+            self.states
+                .insert(GraphImageKey(image.0), ImageState::ColorAttachment);
+            self.ensure_present(device, format, output)?;
+        }
+        let graph = self.frame_graph(history, output, target.map(|(image, _)| image))?;
         let plan = graph
             .compile_with_initial(&self.states)
             .map_err(|error| RhiError::validation(format!("frame graph: {error}")))?;
@@ -802,11 +865,18 @@ impl GpuFrame {
         let (ssao, hdr, bloom) = (self.ssao, self.hdr, self.bloom);
         let pipelines = &self.pipelines;
         let sets = &self.sets;
+        let present = self
+            .present
+            .as_ref()
+            .map(|target| (target.pipeline, target.set));
+        let ui_target = target.map(|(image, _)| image);
         graph.execute_with(&plan, &mut *commands, |pass, commands| {
-            let slot = pass_slot(pass.name).ok_or_else(|| {
-                RhiError::validation(format!("unknown frame pass: {}", pass.name))
-            })?;
-            commands.write_timestamp(query_pool, slot * 2)?;
+            // `frame.ui` не входит в FRAME_PASS_NAMES: UI-проход не
+            // участвует в FrameStats, поэтому его слот отсутствует.
+            let slot = pass_slot(pass.name);
+            if let Some(slot) = slot {
+                commands.write_timestamp(query_pool, slot * 2)?;
+            }
             let result = match pass.name {
                 "frame.gbuffer" => {
                     let desc = RenderPassDesc::new("frame-gbuffer")
@@ -862,9 +932,22 @@ impl GpuFrame {
                         .with_clear([0.0, 0.0, 0.0, 1.0]);
                     draw(commands, pipelines.taa, Some(sets.taa), &push, &desc)
                 }
+                "frame.ui" => {
+                    let (pipeline, set) = present
+                        .ok_or_else(|| RhiError::validation("frame.ui without a present target"))?;
+                    let image = ui_target.ok_or_else(|| {
+                        RhiError::validation("frame.ui without a swapchain image")
+                    })?;
+                    let desc = RenderPassDesc::new("frame-ui")
+                        .with_color(image)
+                        .with_clear([0.0, 0.0, 0.0, 1.0]);
+                    draw(commands, pipeline, Some(set), &push, &desc)
+                }
                 other => Err(RhiError::validation(format!("unknown frame pass: {other}"))),
             };
-            commands.write_timestamp(query_pool, slot * 2 + 1)?;
+            if let Some(slot) = slot {
+                commands.write_timestamp(query_pool, slot * 2 + 1)?;
+            }
             result
         })?;
         commands.end()?;
@@ -898,6 +981,10 @@ impl GpuFrame {
         }
         self.states
             .insert(GraphImageKey(output.0), ImageState::ColorAttachment);
+        if let Some((image, _)) = target {
+            self.states
+                .insert(GraphImageKey(image.0), ImageState::ColorAttachment);
+        }
 
         if self.features.taa {
             // Ping-pong: следующий кадр читает только что записанный выход.
@@ -916,6 +1003,57 @@ impl GpuFrame {
                     DescriptorWrite::image(0, 0, self.tonemap),
                     DescriptorWrite::image(1, 0, next_history),
                     DescriptorWrite::sampler(2, 0, self.sampler),
+                ],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Готовит pipeline вывода под формат цели и привязывает финальное
+    /// изображение кадра к набору UI-прохода (ADR-0048).
+    fn ensure_present(
+        &mut self,
+        device: &mut dyn RhiDevice,
+        format: TextureFormat,
+        source: ImageId,
+    ) -> Result<(), RhiError> {
+        let recreate = match &self.present {
+            Some(present) => present.format != format,
+            None => true,
+        };
+        if recreate {
+            if let Some(old) = self.present.take() {
+                let _ = device.destroy_pipeline(old.pipeline);
+                let _ = device.destroy_descriptor_set(old.set);
+            }
+            let formats = present_formats(format)?;
+            let desc = PipelineDesc::graphics("frame-ui", FULLSCREEN_VS, UI_FS)
+                .with_color_formats(formats)
+                .with_vertex_stride(0)
+                .with_bindings(&SINGLE_BINDINGS)
+                .with_push_constants(FRAME_PUSH_CONSTANT_BYTES);
+            let pipeline = device.create_pipeline(&desc)?;
+            let set = device.create_descriptor_set(
+                &DescriptorSetDesc::new("frame-ui").with_bindings(&SINGLE_BINDINGS),
+            )?;
+            device.update_descriptor_set(
+                set,
+                &[
+                    DescriptorWrite::image(0, 0, source),
+                    DescriptorWrite::sampler(1, 0, self.sampler),
+                ],
+            )?;
+            self.present = Some(PresentOutput {
+                format,
+                pipeline,
+                set,
+            });
+        } else if let Some(present) = &self.present {
+            device.update_descriptor_set(
+                present.set,
+                &[
+                    DescriptorWrite::image(0, 0, source),
+                    DescriptorWrite::sampler(1, 0, self.sampler),
                 ],
             )?;
         }
@@ -959,6 +1097,10 @@ impl GpuFrame {
 
     /// Освобождает изображения, pipeline-ы, sampler, наборы и пул запросов.
     pub fn destroy(self, device: &mut dyn RhiDevice) {
+        if let Some(present) = self.present {
+            let _ = device.destroy_pipeline(present.pipeline);
+            let _ = device.destroy_descriptor_set(present.set);
+        }
         for pipeline in [
             self.pipelines.gbuffer,
             self.pipelines.ssao,
@@ -996,7 +1138,12 @@ impl GpuFrame {
         }
     }
 
-    fn frame_graph(&self, history: ImageId, output: ImageId) -> Result<RenderGraph, RhiError> {
+    fn frame_graph(
+        &self,
+        history: ImageId,
+        output: ImageId,
+        target: Option<ImageId>,
+    ) -> Result<RenderGraph, RhiError> {
         let key = |image: ImageId| GraphImageKey(image.0);
         let mut graph = RenderGraph::new();
         graph.set_output_size(self.width, self.height);
@@ -1010,6 +1157,9 @@ impl GpuFrame {
         } else {
             // Без TAA тонемап пишет прямо в выходной образ.
             images.push(output);
+        }
+        if let Some(target) = target {
+            images.push(target);
         }
         for image in images {
             graph
@@ -1059,6 +1209,12 @@ impl GpuFrame {
                 .read(key(history))
                 .color(key(output)))?;
         }
+        if let Some(target) = target {
+            // UI-stub + вывод в acquired-образ swapchain (ADR-0048).
+            add(GraphPass::new("frame.ui", PassKind::Graphics)
+                .read(key(output))
+                .color(key(target)))?;
+        }
         Ok(graph)
     }
 }
@@ -1100,6 +1256,21 @@ fn clear_image_with(
     commands.end_render_pass()?;
     commands.end()?;
     commands.finish()
+}
+
+/// Форматы цепочки, для которых есть статический pipeline вывода.
+const PRESENT_FORMATS_BGRA: [TextureFormat; 1] = [TextureFormat::Bgra8Srgb];
+const PRESENT_FORMATS_RGBA: [TextureFormat; 1] = [TextureFormat::Rgba8Srgb];
+
+/// Статический список форматов для `PipelineDesc` (ADR-0048).
+fn present_formats(format: TextureFormat) -> Result<&'static [TextureFormat], RhiError> {
+    match format {
+        TextureFormat::Bgra8Srgb => Ok(&PRESENT_FORMATS_BGRA),
+        TextureFormat::Rgba8Srgb => Ok(&PRESENT_FORMATS_RGBA),
+        _ => Err(RhiError::Unsupported {
+            feature: "present target format",
+        }),
+    }
 }
 
 /// Описание геометрии сцены для G-buffer-прохода.
@@ -1516,6 +1687,24 @@ mod tests {
         assert_eq!(frame.zones().len(), 3);
 
         geometry.destroy(&mut device);
+        frame.destroy(&mut device);
+    }
+
+    #[test]
+    fn null_frame_presents_ui_stub_to_swapchain() {
+        use crate::rhi::{NullDevice, SwapchainDesc};
+
+        let mut device = NullDevice::new();
+        let mut frame = GpuFrame::with_features(&mut device, 8, 8, FrameFeatures::none()).unwrap();
+        let mut swapchain = device
+            .create_swapchain(&SwapchainDesc::new("present", 8, 8))
+            .unwrap();
+        let index = frame
+            .present(&mut device, &FrameParams::default(), &mut *swapchain)
+            .unwrap();
+        assert_eq!(index, 0);
+        assert_eq!(frame.zones().len(), 3);
+        assert!(swapchain.acquired_image().is_none());
         frame.destroy(&mut device);
     }
 

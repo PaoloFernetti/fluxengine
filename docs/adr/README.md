@@ -76,7 +76,7 @@ flowchart LR
 - Каждый термин из ADR обязан иметь запись в глоссарии канона
   (правило «термин имеет владельца»).
 
-## Индекс (ADR-0001…0027 — архитектурная фаза; 0028…0030 — этап 2; 0031…0033 — этап 3; 0034…0047 — этап 4/инструменты)
+## Индекс (ADR-0001…0027 — архитектурная фаза; 0028…0030 — этап 2; 0031…0033 — этап 3; 0034…0048 — этап 4/инструменты)
 
 | ADR | Решение | Источник |
 |---|---|---|
@@ -127,6 +127,7 @@ flowchart LR
 | 0045 | Образы swapchain как `ImageId`: acquire → `ColorAttachment`, present → `Present`, владение swapchain, инвалидация framebuffer-кэша | flux-graphics |
 | 0046 | Копирование buffer→buffer: staging upload в device-local storage, `TRANSFER_WRITE → SHADER_READ` барьер, Null-эмуляция | flux-graphics |
 | 0047 | GPU-геометрия сцены: vertex pulling `SV_VertexID`/`SV_InstanceID` из storage-буферов, `GpuFrame::render_scene`, палитра-заглушка | flux-graphics |
+| 0048 | UI-stub и present: `frame.ui` читает tonemap/TAA-выход и пишет в acquired-образ swapchain, `GpuFrame::render_to`/`present` | flux-graphics |
 
 Дополнительные решения, зафиксированные в плане, но не требующие отдельных
 ADR-файлов (частично покрыты выше): input abstraction (flux-platform),
@@ -188,6 +189,11 @@ undo × PIE × стриминг (flux-editor), golden-сейвы, virtual textur
   `VERTEX_ATTRIBUTE_READ` не используется: сцена читает storage-буфер в
   vertex shader, а не через vertex input. Формулировка ADR-0046 не
   переписывается.
+- ADR-0048 дополняет ADR-0045/0042: финальный проход `frame.ui` пишет в
+  acquired-образ цепочки и не входит в `FRAME_PASS_NAMES` (пул остаётся
+  12 запросов). Формат вывода ограничен sRGB 8-бит, пока
+  `PipelineDesc::color_formats` статичен; формулировки ADR-0042/0045 не
+  переписываются.
 - FrameStats по пассам добавлен поверх ADR-0042 без нового ADR: `GpuFrame`
   использует query pools из ADR-0037 и отдаёт `GpuZone` через `zones()`,
   `pass_duration_ns()`, `frame_duration_ns()`; цепочка проходов и их форматы
