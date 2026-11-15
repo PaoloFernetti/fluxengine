@@ -4,8 +4,13 @@
 //! camera-relative позиции для рендера. Буферы переиспользуются: после
 //! прогрева `extract` не аллоцирует. Reversed-Z: near → 1.0, far → 0.0
 //! (ADR-0008).
+//!
+//! `extract` (4.5) — интерполяция позиций и culling по camera-relative AABB:
+//! результат — индексы видимых инстансов, статистика `ExtractStats`.
 
-use flux_math::{Mat4, Vec3, Vec4};
+use flux_math::{Aabb, Frustum, Mat4, Vec3, Vec4};
+
+use super::cull::{cull_instances, unit_bounds, CullStats, SceneExtractStats};
 
 /// Камера рендера.
 ///
@@ -113,7 +118,12 @@ pub struct RenderScene {
     previous: Vec<Vec3>,
     mesh_ids: Vec<u32>,
     material_ids: Vec<u32>,
+    /// Локальные AABB инстансов (для culling).
+    bounds: Vec<Aabb>,
     render: Vec<Vec3>,
+    /// Индексы видимых инстансов после [`Self::extract`].
+    visible: Vec<u32>,
+    stats: SceneExtractStats,
     camera_position: Vec3,
 }
 
@@ -159,16 +169,32 @@ impl RenderScene {
         self.previous.clear();
         self.mesh_ids.clear();
         self.material_ids.clear();
+        self.bounds.clear();
         self.render.clear();
+        self.visible.clear();
+        self.stats = SceneExtractStats::default();
         self.camera_position = Vec3::ZERO;
     }
 
-    /// Добавляет инстанс: текущая и предыдущая позиции, mesh/material.
+    /// Добавляет инстанс с единичным bounding box.
     pub fn push(&mut self, current: Vec3, previous: Vec3, mesh: u32, material: u32) {
+        self.push_with_bounds(current, previous, mesh, material, unit_bounds());
+    }
+
+    /// Добавляет инстанс с локальными границами (для точного culling).
+    pub fn push_with_bounds(
+        &mut self,
+        current: Vec3,
+        previous: Vec3,
+        mesh: u32,
+        material: u32,
+        bounds: Aabb,
+    ) {
         self.current.push(current);
         self.previous.push(previous);
         self.mesh_ids.push(mesh);
         self.material_ids.push(material);
+        self.bounds.push(bounds);
     }
 
     /// Интерполирует позиции и переводит их в camera-relative.
@@ -211,6 +237,42 @@ impl RenderScene {
     #[must_use]
     pub fn material_ids(&self) -> &[u32] {
         &self.material_ids
+    }
+
+    /// Локальные границы инстансов.
+    #[must_use]
+    pub fn bounds(&self) -> &[Aabb] {
+        &self.bounds
+    }
+
+    /// Индексы видимых инстансов после [`Self::extract`].
+    #[must_use]
+    pub fn visible_indices(&self) -> &[u32] {
+        &self.visible
+    }
+
+    /// Статистика последнего [`Self::extract`].
+    #[must_use]
+    pub fn stats(&self) -> SceneExtractStats {
+        self.stats
+    }
+
+    /// Отсекает инстансы по фрустуму, используя camera-relative позиции
+    /// после [`Self::interpolate`]; результат пишется в `out`.
+    pub fn cull_into(&self, frustum: &Frustum, out: &mut Vec<u32>) -> CullStats {
+        cull_instances(&self.render, &self.bounds, frustum, out)
+    }
+
+    /// Extract-шаг кадра (4.5): интерполяция позиций и culling.
+    ///
+    /// Возвращает статистику; индексы видимых доступны через
+    /// [`Self::visible_indices`]. Буферы переиспользуются между кадрами.
+    pub fn extract(&mut self, alpha: f32, frustum: &Frustum) -> SceneExtractStats {
+        self.interpolate(alpha);
+        // Поля заимствуются раздельно: render/bounds — чтение, visible — запись.
+        let cull = cull_instances(&self.render, &self.bounds, frustum, &mut self.visible);
+        self.stats = SceneExtractStats::from_cull(self.render.len(), cull);
+        self.stats
     }
 }
 
@@ -277,6 +339,62 @@ mod tests {
         assert_eq!(scene.render_positions(), &[Vec3::new(2.0, 0.0, 0.0)]);
         scene.interpolate(-1.0);
         assert_eq!(scene.render_positions(), &[Vec3::ZERO]);
+    }
+
+    fn camera_frustum() -> Frustum {
+        Frustum::from_view_projection(Camera::default().view_projection())
+    }
+
+    #[test]
+    fn extract_interpolates_and_culls() {
+        let mut scene = RenderScene::new();
+        scene.push(Vec3::new(0.0, 0.0, -5.0), Vec3::new(0.0, 0.0, -4.0), 1, 2);
+        scene.push(Vec3::new(0.0, 0.0, 5.0), Vec3::new(0.0, 0.0, 5.0), 3, 4);
+        let stats = scene.extract(0.5, &camera_frustum());
+        assert_eq!(
+            stats,
+            SceneExtractStats {
+                instances: 2,
+                visible: 1,
+                culled: 1
+            }
+        );
+        assert_eq!(scene.visible_indices(), &[0]);
+        assert_eq!(scene.render_positions()[0], Vec3::new(0.0, 0.0, -4.5));
+        assert_eq!(scene.stats(), stats);
+    }
+
+    #[test]
+    fn custom_bounds_participate_in_culling() {
+        let mut scene = RenderScene::new();
+        let huge = Aabb::from_center_half_extents(Vec3::ZERO, Vec3::splat(500.0));
+        scene.push_with_bounds(
+            Vec3::new(0.0, 0.0, 200.0),
+            Vec3::new(0.0, 0.0, 200.0),
+            0,
+            0,
+            huge,
+        );
+        assert_eq!(scene.bounds(), &[huge]);
+        let stats = scene.extract(1.0, &camera_frustum());
+        assert_eq!(stats.visible, 1);
+    }
+
+    #[test]
+    fn extract_reuses_buffers() {
+        let mut scene = RenderScene::new();
+        for index in 0..32 {
+            let position = Vec3::new(0.0, 0.0, -1.0 - index as f32);
+            scene.push(position, position, 0, 0);
+        }
+        scene.extract(1.0, &camera_frustum());
+        let visible = scene.visible_indices().len();
+        scene.extract(1.0, &camera_frustum());
+        assert_eq!(scene.visible_indices().len(), visible);
+        assert_eq!(scene.stats().instances, 32);
+        scene.clear();
+        assert_eq!(scene.stats(), SceneExtractStats::default());
+        assert!(scene.visible_indices().is_empty());
     }
 
     #[test]

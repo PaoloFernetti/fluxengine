@@ -812,6 +812,7 @@ name = "flux-graphics"
 version = "0.10.0"
 dependencies = [
  "ash",
+ "criterion",
  "flux-core",
  "flux-math",
  "parking_lot",

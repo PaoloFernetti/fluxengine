@@ -599,12 +599,22 @@ deadzone не теряет диапазон (rescale); rebinding roundtrip че�
 
 - [x] RenderScene: SoA-снапшот ECS-кадра + alpha интерполяции
 - [x] Camera-relative f32 + Reversed-Z (view/projection)
-- [ ] Пайплайн: culling → G-buffer → deferred lighting → UI-stub → present
-      (после GPU-проходов 4.6 и present 4.2)
+- [x] Culling: `render::cull` — camera-relative AABB против фрустума,
+      детерминированный порядок, `CullStats`/`SceneExtractStats`
+- [x] Extract-шаг: `RenderScene::extract(alpha, frustum)` — интерполяция +
+      culling, переиспользование буферов, `push_with_bounds`
+- [x] Бюджет extract: criterion `benches/extract.rs`, 10 000 инстансов —
+      ~37.7 мкс (порог 1 мс, запас ~26×)
+- [ ] GPU-пайплайн: vertex pulling `SV_VertexID` → G-buffer → deferred
+      lighting → UI-stub → present (нужен DXC для новых SPIR-V и контракт
+      образа swapchain в RHI)
 
-**Приёмка**: extract ≤ 1 мс на эталонной сцене (замер — I8, golden/G4); камера
-не теряет точность на дистанции. FrameStats по пассам — в 4.9, camera-relative
-в тенях/IBL/скайбоксе — в 4.6: там появятся сами проходы.
+**Приёмка**: extract ≤ 1 мс на эталонной сцене — criterion-бенч
+`crates/flux-graphics/benches/extract.rs` даёт ~37.7 мкс на 10 000 инстансов;
+камера не теряет точность на дистанции. FrameStats по пассам — в 4.9,
+camera-relative в тенях/IBL/скайбоксе — в 4.6: там появятся сами проходы.
+GPU-геометрия и present требуют шейдерного тулчейна (DXC) и доступа к образу
+swapchain — отдельные шаги после 4.6/4.9.
 
 ### 4.6 PBR и G-buffer
 

@@ -17,7 +17,8 @@ Roadmap: [docs/Roadmap.md](../../docs/Roadmap.md). API: [docs/api.md](../../docs
 | `rhi::dx12` | D3D12 backend на `windows` | I2+ ⏳ |
 | `render` | Transfer, ResourceRegistry, VramBudget | I2 ✅ |
 | `render::graph` | Render Graph, автоматические барьеры, aliasing, resize | I3 ✅ |
-| `render::scene` | `Camera` (camera-relative, Reversed-Z), `RenderScene` (SoA, alpha) | I4 ✅ |
+| `render::scene` | `Camera` (camera-relative, Reversed-Z), `RenderScene` (SoA, alpha, extract) | I4 ✅ |
+| `render::cull` | camera-relative AABB против фрустума, `CullStats`/`SceneExtractStats`, бенч extract | I4b ✅ (4.5) |
 | `render::pbr` | `Material`, GGX/Smith/Fresnel/multiscatter, `evaluate_direct` | I5 ✅ (CPU-эталон) |
 | `render::gbuffer` | ABI ADR-0017: форматы RT0–RT2, depth, `GbufferLayout` | I5 ✅ |
 | `render::tonemap` | ACES/AgX (ADR-0018) | I5 ✅ (CPU-эталон) |
@@ -101,6 +102,12 @@ flux-graphics = { workspace = true, features = ["vulkan"] }
   `tools/flux-assetc shader`). `tests/vulkan_pso.rs` собирает PSO, рисует
   треугольник в `Rgba8Srgb`-цель, проверяет descriptor set и clear-кадр
   через staging-readback; лог validation остаётся чистым.
+- Extract (4.5): `render::cull` отсекает инстансы по camera-relative AABB
+  (`cull_instances`, `CullStats`), `RenderScene::extract(alpha, frustum)`
+  совмещает интерполяцию и culling, отдаёт `visible_indices()` и
+  `SceneExtractStats { instances, visible, culled }`; `push_with_bounds`
+  задаёт локальные границы. `benches/extract.rs` — 10 000 инстансов,
+  ~37.7 мкс на кадр (порог 4.5 — 1 мс).
 - GPU-проходы кадра (ADR-0042): `render::frame::GpuFrame` —
   `frame.gbuffer` (RT0/RT1/RT2 + depth) → `frame.ssao` → `frame.lighting`
   (GGX/Smith/Fresnel/multiscatter) → `frame.bloom` → `frame.tonemap` (ACES)

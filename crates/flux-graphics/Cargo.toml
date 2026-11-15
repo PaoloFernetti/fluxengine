@@ -27,5 +27,13 @@ raw-window-handle = "0.6"
 # ADR-0034: Vulkan bindings, runtime-загрузка (feature `vulkan`).
 ash = { workspace = true, optional = true }
 
+[dev-dependencies]
+# ADR-0029: criterion — dev-only, бенчи extract/4.5.
+criterion.workspace = true
+
+[[bench]]
+name = "extract"
+harness = false
+
 [lints]
 workspace = true

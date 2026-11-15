@@ -36,6 +36,7 @@
 | 4 | I2 | `flux-graphics::render`: `TransferSystem`, `ResourceRegistry`, `VramBudget` |
 | 4 | I3 | `flux-graphics::render::graph`: `RenderGraph`, автоматические барьеры, aliasing, resize |
 | 4 | I4 | `flux-graphics::render::scene`: `Camera`, `RenderScene`; `flux-engine::render_extract`: ECS→сцена, alpha, camera-relative |
+| 4 | I4b | `flux-graphics::render::cull`: camera-relative AABB против фрустума, `CullStats`/`SceneExtractStats`, `RenderScene::extract`; criterion-бенч `benches/extract.rs` (4.5) |
 | 4 | I5 | `flux-graphics::rhi`: SPIR-V `PipelineDesc`, `PrimitiveTopology`, реальные graphics/compute PSO; `render::pbr/gbuffer/tonemap/post`: PBR-математика, G-buffer ABI, тон-маппинг, bloom/TAA/SSAO |
 | 4 | I6 | `flux-graphics::shaders`: `shader.json`, keyword-маски, off-demand fallback, кэш байткод/PSO/материал |
 | 4 | I7 | `flux-graphics::settings`: `HardwareTier`, `QualityPreset`, `GraphicsSettings`, `SettingsChange`, `GraphicsFeatureRegistry` |
@@ -8632,7 +8633,12 @@ assert!((clip.z / clip.w - 1.0).abs() < 1e-4);
 
 #### `RenderScene::push(&mut self, current, previous, mesh, material)`
 
-Добавляет инстанс: позиции текущего и предыдущего тика, mesh/material id.
+Добавляет инстанс: позиции текущего и предыдущего тика, mesh/material id,
+единичный bounding box (`unit_bounds()`).
+
+#### `RenderScene::push_with_bounds(&mut self, current, previous, mesh, material, bounds)`
+
+То же, но с локальным `Aabb` инстанса — для точного culling.
 
 #### `RenderScene::interpolate(&mut self, alpha)`
 
@@ -8648,8 +8654,37 @@ assert_eq!(scene.render_positions(), &[Vec3::new(4.0, 0.0, 0.0)]);
 ```
 
 Геттеры: `len`, `is_empty`, `capacity`, `camera_position`, `render_positions`,
-`current_positions`, `previous_positions`, `mesh_ids`, `material_ids`;
-`clear()` сохраняет ёмкость.
+`current_positions`, `previous_positions`, `mesh_ids`, `material_ids`,
+`bounds`, `visible_indices`, `stats`; `clear()` сохраняет ёмкость.
+
+#### `RenderScene::extract(&mut self, alpha, frustum) -> SceneExtractStats`
+
+Extract-шаг кадра (4.5): `interpolate(alpha)` и culling по camera-relative
+AABB против `Frustum` (обычно `Frustum::from_view_projection(camera.view_projection())`).
+Индексы видимых — `visible_indices()`, статистика — `stats()`:
+`SceneExtractStats { instances, visible, culled }` (не путать с
+`flux_engine::ExtractStats` — числом сущностей ECS). Буферы переиспользуются,
+порядок индексов детерминирован.
+
+#### `cull_instances(positions, bounds, frustum, out) -> CullStats`
+
+Низкоуровневое отсечение: `out` очищается и заполняется индексами видимых
+по возрастанию; при нехватке `bounds` используется `unit_bounds()`
+(куб со стороной 1). `CullStats { tested, visible }` + `culled()`.
+
+```rust
+let camera = Camera::default();
+let frustum = Frustum::from_view_projection(camera.view_projection());
+let mut scene = RenderScene::new();
+scene.push(Vec3::new(0.0, 0.0, -5.0), Vec3::new(0.0, 0.0, -5.0), 0, 0);
+scene.push(Vec3::new(0.0, 0.0, 5.0), Vec3::new(0.0, 0.0, 5.0), 0, 0);
+let stats = scene.extract(1.0, &frustum);
+assert_eq!((stats.visible, stats.culled), (1, 1));
+assert_eq!(scene.visible_indices(), &[0]);
+```
+
+Бюджет: `benches/extract.rs` — 10 000 инстансов, ~37.7 мкс на кадр
+(порог приёмки 4.5 — ≤ 1 мс).
 
 ### PBR, G-buffer, тон-маппинг и пост-обработка ✅
 
