@@ -4,6 +4,14 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.16.0] - 2026-11-15
+
+### Features
+
+#### graphics
+
+- GPU-геометрия сцены через vertex pulling (4.5, ADR-0047) ([082fa67](https://github.com/PaoloFernetti/fluxengine/commit/082fa67991efe3f446e4b28eefdc504a075147c0))
+
 ## [0.15.0] - 2026-11-15
 
 ### Features
