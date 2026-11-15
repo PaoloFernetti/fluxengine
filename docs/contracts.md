@@ -45,7 +45,7 @@ UUID — атрибут идентификации (content-hash для ассе
 | Scene manifest (RON) | flux-scene, редактор | architecture.md, flux-scene |
 | `shader.json` | flux-graphics/shaders | architecture.md, «Шейдерные пермутации» |
 | Schema (data) | SchemaRegistry | ADR-0030; architecture.md, flux-ecs |
-| Sequencer tracks | flux-editor (эт. 6) | architecture.md, «Катсцены / секвенсор (отложено)» |
+| Sequencer tracks | flux-editor | architecture.md, «Катсцены / секвенсор» |
 
 ### .fpf (кратко)
 Header (magic, version, offset index) → Index table (UUID, type, offset,

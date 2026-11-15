@@ -2,7 +2,7 @@
 
 Компилятор ассетов: KTX2, меши, Opus, .fpf, шейдеры.
 
-Канон: [docs/canon.md](../../docs/canon.md). План: [docs/architecture.md](../../docs/architecture.md).
+Канон: [docs/canon.md](../../docs/canon.md). Архитектура: [docs/architecture.md](../../docs/architecture.md).
 
 ## Шейдеры (I6b, ADR-0035/ADR-0036)
 

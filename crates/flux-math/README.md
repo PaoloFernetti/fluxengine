@@ -2,4 +2,4 @@
 
 Математика: glam re-export, канон `WorldPos(i64)`, sim-пространство с rebase, формы.
 
-Канон: [docs/canon.md](../../docs/canon.md). План: [docs/architecture.md](../../docs/architecture.md).
+Канон: [docs/canon.md](../../docs/canon.md). Архитектура: [docs/architecture.md](../../docs/architecture.md).

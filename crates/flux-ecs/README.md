@@ -3,7 +3,7 @@
 Архетипная ECS: сущности, компоненты, запросы, планировщик, SchemaRegistry
 и SaveState-дельты. Сердце данных движка.
 
-Канон: [`docs/canon.md`](../../docs/canon.md). План: [`docs/architecture.md`](../../docs/architecture.md),
+Канон: [`docs/canon.md`](../../docs/canon.md). Архитектура: [`docs/architecture.md`](../../docs/architecture.md),
 раздел «Собственная архетипная ECS». Roadmap: этап 2 (WP 2.1–2.9).
 Детали: [`plans/stage-2-ecs.md`](../../plans/stage-2-ecs.md),
 [`plans/stage-2-archetypes-delta.md`](../../plans/stage-2-archetypes-delta.md).

@@ -3,7 +3,7 @@
 Фасад, точка сборки и главный цикл кадра. Единственный крейт, который знает
 конкретные подсистемы; остальные видят только контракты `flux-core/contracts`.
 
-Канон: [`docs/canon.md`](../../docs/canon.md). План: [`docs/architecture.md`](../../docs/architecture.md),
+Канон: [`docs/canon.md`](../../docs/canon.md). Архитектура: [`docs/architecture.md`](../../docs/architecture.md),
 раздел «Фасад и точка сборки». Roadmap: WP 1.5–1.6.
 
 ## Ответственность одной строкой

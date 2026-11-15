@@ -92,12 +92,12 @@ export const docs = [
   makeDoc({
     id: 'architecture',
     file: 'architecture.md',
-    title: 'Архитектурный план',
+    title: 'Архитектура',
     nav: 'Архитектура',
     group: 'arch',
     icon: 'layers',
     kicker: 'High-Level Design',
-    description: 'Полный план: 16 крейтов, 8 групп подсистем, потоки данных и сквозные решения.',
+    description: '16 крейтов, 7 групп подсистем, потоки данных и сквозные решения.',
     raw: architecture,
   }),
   makeDoc({

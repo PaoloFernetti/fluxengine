@@ -2,7 +2,7 @@
 
 RHI-контракты, Vulkan/DX12, Render Graph, PBR.
 
-Канон: [docs/canon.md](../../docs/canon.md). План: [docs/architecture.md](../../docs/architecture.md).
+Канон: [docs/canon.md](../../docs/canon.md). Архитектура: [docs/architecture.md](../../docs/architecture.md).
 Roadmap: [docs/Roadmap.md](../../docs/Roadmap.md). API: [docs/api.md](../../docs/api.md#flux-graphics).
 
 ## Структура

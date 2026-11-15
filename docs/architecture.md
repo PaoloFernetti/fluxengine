@@ -1,8 +1,9 @@
-# FluxEngine — архитектурный план (полный)
+# FluxEngine — архитектура
 
 - Владелец: архитектор
 - Статус: Living
 - Канон имён и глоссарий: [canon.md](canon.md) (приоритет при расхождении)
+- Статус и порядок работ: [Roadmap.md](Roadmap.md); принятые решения — [adr/README.md](adr/README.md)
 
 ## Ключевые решения
 
@@ -10,7 +11,7 @@
 |---|---|
 | Графический API | Собственный RHI с двумя бэкендами: **Vulkan (ash)** + **DX12** |
 | ECS | **Собственная архетипная ECS** в `flux-ecs` (полный контроль над планированием и памятью) |
-| Физика | **Собственная физика на f64** в `flux-physics` (этап 6); Rapier не используется |
+| Физика | **Собственная физика на f64** в `flux-physics`; Rapier не используется |
 | Модель разработки | Crate Workspace, модульные подсистемы, Data-Oriented Design |
 
 ## Структура workspace
@@ -27,20 +28,21 @@ fluxengine/
 │   ├── flux-platform/      # Окно, display, input abstraction, системные сервисы
 │   ├── flux-asset/         # UUID-хэндлы, реестр, асинхронная загрузка, hot-reload
 │   ├── flux-scene/         # Сцены, world partition, prefab-ы, save/load
-│   ├── flux-physics/       # Собственная физика на f64 (этап 6)
+│   ├── flux-physics/       # Собственная физика на f64
 │   ├── flux-anim/          # Анимационная система
 │   ├── flux-ai/            # AI: navmesh, pathfinding, BT/HFSM, crowd
 │   ├── flux-script/        # Скриптинг: Lua 5.4 через mlua
 │   ├── flux-net/           # Сетевой слой: репликация, relevance, транспорт
-│   ├── flux-audio/         # Звук (этап 6)
-│   ├── flux-ui/            # In-game UI (этап 6)
-│   ├── flux-editor/        # Редактор сцены (этап 7)
+│   ├── flux-audio/         # Звук
+│   ├── flux-ui/            # In-game UI
+│   ├── flux-editor/        # Редактор сцены
 │   ├── flux-engine/        # Фасад: сборка подсистем, публичный API для игр
 │   └── flux-macros/        # Служебные дерайвы: Reflect/save/replicated (ADR-0028)
 ├── examples/               # Примеры игр
 └── tools/
     ├── flux-assetc/        # Компилятор ассетов: KTX2, меши, Opus, .fpf
-    └── flux-build/         # Оркестратор сборки: DAG, кэш, пакинг
+    ├── flux-build/         # Оркестратор сборки: DAG, кэш, пакинг
+    └── flux-release/       # Релизный цикл: версии, CHANGELOG, теги (ADR-0040)
 ```
 
 ## Граф зависимостей крейтов
@@ -81,7 +83,7 @@ _math, core, ecs_
 - Слой типов — свой публичный API: Vec3/Mat4/Quat/DVec3/DQuat, жёсткий контракт: no allocation, детерминизм операций, выравнивание для SIMD.
 - Слой реализации — glam как backend (default-features = false, libm для no_std), типы экспортируются через re-export в модуле types.rs — бэкенд меняется в одном месте.
 - Vec3 (alignment 4, для полей структур) vs Vec3A (alignment 16, для SoA-массивов и SIMD-загрузок) — в контракте разделены явно.
-- Свой SIMD — не раньше, чем профилировщик покажет, что glam мешает; бутылочное горлышко — пропуски памяти и батчинг, а не векторная математика.
+- Свой SIMD не вводится, пока профилировщик не покажет, что glam мешает; бутылочное горлышко — пропуски памяти и батчинг, а не векторная математика.
 
 #### Три пространства координат (большие миры)
 
@@ -94,9 +96,9 @@ _math, core, ecs_
 - Terrain/статика: вершины в .fpf локальны относительно опорной точки меша/чанка; pivot чанка — в метаданных .fpf (согласовано с квантованием к origin чанка).
 - Детерминизм: физика считает на скалярном libm-пути (glam SIMD не bit-exact между x86/NEON), рендер может использовать SIMD.
 
-> **Физика и f64 — решение утверждено**
+> **Физика и f64**
 >
-> Собственная физика на f64 (flux-physics, этап 6), Rapier не используется. Физика считает на скалярном libm-пути — детерминизм. Обоснование: полноценный уровень, полный контроль, соответствие f64-миру и философии движка «всё своё».
+> Собственная физика на f64 (flux-physics), Rapier не используется. Физика считает на скалярном libm-пути — детерминизм. Обоснование: полноценный уровень, полный контроль, соответствие f64-миру и философии движка «всё своё».
 
 ### Детальный дизайн ядра
 
@@ -123,10 +125,6 @@ _math, core, ecs_
 2. Никаких знаний о подсистемах: NO ecs_bridge / render_bridge / math_compat — ECS и остальные подсистемы используют core, а не наоборот.
 3. Ничего глобального — контексты передаются явно.
 4. Детерминизм — симуляция опирается только на fixed_delta.
-
-| MVP (этап 1 workspace) | Этап 2+ |
-|---|---|
-| time, jobs (task-based), memory (Bump/Pool/Frame), events, logging, contracts, минимальный config | crash-дампы (per-OS реализации в flux-platform/crash), Tlsf/Dlmalloc, fiber-based jobs, экспорт профайлера, DynamicLibrary hot-reload, mmap-стриминг |
 
 ### Собственная архетипная ECS
 
@@ -165,10 +163,6 @@ flux-ecs/src/
 - Потребители одной схемы: сериализация сцен (flux-scene), сейвы, инспектор редактора (float→слайдер по min/max, enum→dropdown, UUID→asset-picker), типы гизмо.
 - Решение «схемы как данные» (не трейты) — сериализация и инспекция без дублирования.
 
-| MVP | Этап 2+ |
-|---|---|
-| Entity, архетипы, query с кэшем, resources, Commands, single-threaded scheduler, change detection, SchemaRegistry | Parallel scheduler на job system DAG, relations, scripting-registry, GC архетипов, World::clone (PIE v2 редактора; API спроектировать при MVP) |
-
 ## Рантайм
 
 _platform, engine, цикл кадра_
@@ -198,7 +192,7 @@ flux-platform/src/
 
 > **Политика крэшей**
 >
-> dev падает громко (RUST_BACKTRACE=full + трейсинг), prod пишет дамп и выходит чисто. Отправка дампов на сервер — отдельная подсистема телеметрии (позже), platform только сохраняет.
+> dev падает громко (RUST_BACKTRACE=full + трейсинг), prod пишет дамп и выходит чисто. Отправка дампов на сервер — отдельная подсистема телеметрии, platform только сохраняет.
 
 #### Оконно-дисплейный слой
 
@@ -211,7 +205,7 @@ flux-platform/src/
 #### Input abstraction layer — 4 слоя
 
 1. Raw events: scancodes (не раскладки — WASD на AZERTY = ZQSD это фича), raw mouse delta в обход OS-ускорения (Raw Input API), собственная очередь с таймстемпами для input buffering и детерминизма.
-2. Action mapping: ActionValue (Bool/Axis1/Axis2/Axis3), InputAction с именем/UUID, bindings, consumed. Действия объявляет геймплей, платформа не знает про «прыжок». Один источник — много потребителей. Чорды, hold/tap, dead triggers — в mapping-слое. PlayerId в биндингах — local multiplayer с первого дня. Контексты UI/dialogue/gameplay со стеком и приоритетами поглощения.
+2. Action mapping: ActionValue (Bool/Axis1/Axis2/Axis3), InputAction с именем/UUID, bindings, consumed. Действия объявляет геймплей, платформа не знает про «прыжок». Один источник — много потребителей. Чорды, hold/tap, dead triggers — в mapping-слое. PlayerId в биндингах — local multiplayer. Контексты UI/dialogue/gameplay со стеком и приоритетами поглощения.
 3. Rebinding: рантайм-захват следующего raw event, проверка коллизий, персистентность через flux-core/config профили, пресеты (клавиатура/геймпад/левша), hot-reload TOML в dev.
 4. Кривые: радиальные deadzones с rescale (не покоординатные), response curves linear/expo/custom, sensitivity per-axis с инверсией, anti-deadzone для триггеров — всё per-action.
 
@@ -286,7 +280,7 @@ impl EngineBuilder {
 - clock.begin_frame → EngineEvent::FrameStart
 - while накопитель просит: tick() → plugins.update_fixed (ECS-системы, физика)
 - extractor.extract → RenderScene; plugins.update_variable (UI, стриминг)
-- renderer.render_frame → present (старт: main-thread)
+- renderer.render_frame → present (main-thread)
 - jobs.wait_idle (fence кадра) → telemetry.end_frame
 
 - Back-pressure: анти-spiral-of-death ограничитель N фиксированных шагов за кадр; render-on-demand — present можно пропускать при перегрузке.
@@ -385,10 +379,10 @@ Cargo.toml: `default = []` — бэкенды реализуют один trait-
 | Тени | вкл/выкл, число CSM-каскадов 1–4, разрешение shadow map 512–4096, дистанция |
 | SSAO | вкл/выкл, радиус, интенсивность, half-res |
 | Сглаживание (AAMode) | Off \| FXAA \| MSAA 2x/4x/8x \| TAA \| DLAA; у MSAA — только на forward/transparent проходах, с deferred совмещается через resolve; у TAA — jitter strength |
-| Апскейлинг (Upscaler) | Native \| DLSS (NVIDIA, Quality/Balanced/Performance/Ultra Performance) \| FSR (AMD, этап 3+). DLSS интегрируется на уровне RHI через NVNGX SDK (feature-гейт); resolution_scale согласован с режимом апскейлера |
+| Апскейлинг (Upscaler) | Native \| DLSS (NVIDIA, Quality/Balanced/Performance/Ultra Performance) \| FSR (AMD). DLSS интегрируется на уровне RHI через NVNGX SDK (feature-гейт); resolution_scale согласован с режимом апскейлера |
 | Вывод | VSync, framerate cap, fullscreen, HDR (по поддержке свопчейна) |
 | Bloom/пост | bloom, tonemapper ACES/Reinhard, exposure, film grain |
-| Reflections | SSR off/low/high (этап 4+) |
+| Reflections | SSR off/low/high (опциональная фича) |
 | Текстуры | mipmap LOD bias, анизотропия 1–16, texture_quality (коэффициент бюджета, НЕ абсолютные гигабайты), vram_cap_override («не больше X МБ») |
 | Геометрия | LOD distance multiplier, per-frame бюджет видимых мешей |
 
@@ -426,13 +420,13 @@ engine.graphics.set(ShadowCascades(3))
 
 - Рендер никогда не ходит в ECS напрямую; extractor раз в кадр собирает RenderScene.
 - SoA-массивы без allocations через frame allocator из flux-core.
-- GPU-driven rendering (draw-indirect от GPU) — этап 3+, сначала CPU-side visible list.
+- GPU-driven rendering (draw-indirect от GPU) — расширение поверх CPU-side visible list.
 
 > **Шейдеры**
 >
 > HLSL + DXC: DXC компилирует в DXIL (DX12) и SPIR-V (Vulkan) — единый язык для обоих бэкендов. Компиляция офлайн через tools/flux-assetc; в dev-режиме — hot-reload шейдеров.
 >
-> Вход RHI — готовый SPIR-V (ADR-0035): `PipelineDesc` фиксирует entry points, vertex layout v1 (позиция `f32x3`, stride 12), форматы аттачментов и топологию. DX12 получает DXIL кросс-компиляцией SPIR-V на этапе сборки шейдеров, а не вторым контрактом RHI.
+> Вход RHI — готовый SPIR-V (ADR-0035): `PipelineDesc` фиксирует entry points, vertex layout v1 (позиция `f32x3`, stride 12), форматы аттачментов и топологию. DX12 получает DXIL кросс-компиляцией SPIR-V при сборке шейдеров, а не вторым контрактом RHI.
 
 ### Контракт Renderer и владение
 
@@ -510,12 +504,12 @@ eviction — только между кадрами и после fence-ов. Up
 #### Два уровня разрешения Handle
 
 - Уровень 1 CPU: ResourceRegistry slot → состояние Empty / Pending / Ready { GpuImage, descriptor_slot } / Evicting; ref-count: asset-кэш держит strong-ref, сцены/материалы — weak.
-- Уровень 2 GPU: биндлесс-массив (VK_EXT_descriptor_indexing / bindless heap DX12); биндлесс-индекс выдаётся при Reserve, не при Ready — материал ссылается на индекс с первого дня, шейдер читает прокси до догрузки; обновление дескриптора — точечное. При Eviction слот рециклируется (LRU поверх descriptor heap), прокси остаётся в слоте.
+- Уровень 2 GPU: биндлесс-массив (VK_EXT_descriptor_indexing / bindless heap DX12); биндлесс-индекс выдаётся при Reserve, не при Ready — материал ссылается на индекс сразу, шейдер читает прокси до догрузки; обновление дескриптора — точечное. При Eviction слот рециклируется (LRU поверх descriptor heap), прокси остаётся в слоте.
 
 - **Прокси на классы** — белый 1x1, чёрный, нейтральная нормаль, розово-чёрный шейкер (ассета нет вообще), серый (грузится). Код рендера не знает о состоянии загрузки — деградация автоматическая.
-- **Eviction** — Только между кадрами (после submit, перед extract следующего) — снапшот содержит слоты, выгрузка под живым снапшотом = use-after-free на GPU.
+- **Eviction** — только между кадрами (после submit, перед extract следующего) — снапшот содержит слоты, выгрузка под живым снапшотом = use-after-free на GPU.
 - **GPU-рефкаунт** — per-resource last_used_frame, выгрузка допустима при current_frame − last_used_frame > frames_in_flight.
-- **LRU** — Решение с гистерезисом — у flux-asset; один общий LRU-кэш на текстуры и меши; бюджет VRAM общий, учёт в ResourceRegistry.
+- **LRU** — решение с гистерезисом — у flux-asset; один общий LRU-кэш на текстуры и меши; бюджет VRAM общий, учёт в ResourceRegistry.
 
 Меши: та же схема, барьеры не нужны (копия в TransferDst), eviction валидирует index range-ы. Dev-режим: hot-reload → re-upload по тому же контракту, политика «не выгружать никогда» (реестр игнорирует LRU). Контракты upload и eviction разделены.
 
@@ -566,7 +560,7 @@ eviction — только между кадрами и после fence-ов. Up
 
 | Расширение | G-buffer-затраты | Включать |
 |---|---|---|
-| Clearcoat (лак: авто, прод) | 2 параметра | да, этап 4 |
+| Clearcoat (лак: авто, прод) | 2 параметра | да |
 | Sheen (ткань/бархат) | 1–2 параметра | да, дёшево |
 | Subsurface cheap (wrap/half-Lambert) | 1 параметр | да |
 | Anisotropy (причёсанные металлы, волосы) | 1–2 параметра | да, дёшево |
@@ -585,7 +579,7 @@ eviction — только между кадрами и после fence-ов. Up
 | Depth | D32 reversed-Z | — |
 
 - Deferred lighting расширяется флагами: база всегда; clearcoat-лоб — второй GGX-лоб в light-пассе, ветвящийся по флагу. SSR/транслусент — forward-пасс поверх (hybrid). Full SSS при потребности — feature-set слот на High+, или переработка layout.
-- Тон-маппинг: фиксируем семейство (ACES-fitted / AgX — выбор в GraphicsSettings, но семейство ABI художников; смена после этапа 4 = перетонирование всех референсов).
+- Тон-маппинг: фиксируем семейство (ACES-fitted / AgX — выбор в GraphicsSettings, но семейство ABI художников; смена = перетонирование всех референсов).
 - Связи: расширения = статические keyword-флаги, PBR-параметры — данные: «структура шейдера — keyword, значения — данные». Golden-сцены обязаны покрывать каждое включённое расширение.
 
 ## Контент
@@ -623,7 +617,7 @@ flux-scene/src/
 #### World partition и стриминг
 
 - Грид-тайлы 256–1024 м (конфигурируемо), тайл = пак: подмножество сущностей + ссылки на ассеты. Сущность принадлежит тайлу по опорной точке (не AABB).
-- Грид: квадратный + HLOD (запечённые импосторы/агрегаты для дальних тайлов); PartitionStrategy как trait — иерархический квадtree добавляется позже без переписывания стримера.
+- Грид: квадратный + HLOD (запечённые импосторы/агрегаты для дальних тайлов); PartitionStrategy как trait — иерархический квадtree добавляется без переписывания стримера.
 - Streaming radii зонами: FullyLoaded (всё: анимации, физика, аудио) → Actors (сущности загружены, сложные компоненты спят) → HLOD; per-регион и per-тип контента.
 - Спекулятивная загрузка с упреждением по скорости движения (стример получает скорость от физики/скриптов). Бюджеты: байт/сек, VRAM, лимит таск-загрузок. Приоритет: видимая камере > близкая > спекулятивная > HLOD.
 - Eviction: LRU по радиусам с гистерезисом (граница выгрузки дальше границы загрузки — против пинг-понга).
@@ -634,7 +628,7 @@ flux-scene/src/
 - Префаб = ассет (UUID, живёт в flux-asset); инстанс = override-слой: сущность хранит только изменённые поля, остальное из префаба.
 - PrefabRef { uuid, overrides }; вложенные префабы с наследованием; обновление базового обновляет все инстансы кроме overridden полей.
 - Детекция циклов вложенности (A→B→A) — ошибка компиляции ассета, не рантайм.
-- API редактора сразу: Make Prefab / Revert to Prefab / Apply to Prefab.
+- API редактора: Make Prefab / Revert to Prefab / Apply to Prefab.
 - Спавн префабов — батчинг через spawn_batch flux-ecs.
 
 > **Двухслойная модель мира**
@@ -672,7 +666,7 @@ flux-scene/src/
 Три источника сериализованных данных стареют одинаково: SaveState (сейвы игроков), event-journal персистентности (старые записи НЕ переписываются: миграция обязана читать ЛЮБУЮ историческую ревизию), пики ассетов (решается content-hash + пересборка).
 
 1. Версия схемы на каждой записи: SchemaRef { type_uuid, schema_rev } — на диске и на проводе. schema_rev — версия схемы КОНКРЕТНОГО типа, не версия игры.
-2. UUID полей — идентификатор совместимости С ЭТАПА 1: переименование поля НЕ требует миграции; смена типа — новая ревизия.
+2. UUID полей — идентификатор совместимости: переименование поля НЕ требует миграции; смена типа — новая ревизия.
 3. Миграции — чистые детерминированные функции в SchemaRegistry, ЦЕПОЧКАМИ (v1→v2→v3); отсутствующий шаг = ошибка загрузки с внятным сообщением, не молчаливый дефолт.
 4. READ-TIME миграция по умолчанию («никогда не разрушать источник»): сейвы и журналы не перезаписываются при чтении; откат патча работает.
 5. Несовместимое → ЯВНОЕ отбрасывание с логом («dropped N records of type X rev 2»), молчаливые потери запрещены. Для журнала: удалённая механика посередине replay = «пустая» миграция.
@@ -701,13 +695,6 @@ flux-scene — ОРКЕСТРАТОР стриминга и структуры �
 - flux-ai: модификаторы LOS — туман/ночь → perception-бюджет.
 - flux-net: дельты weather state, квантование SimTime.
 - flux-scene: WeatherVolume стримится с тайлом, flush в SaveState по контракту eviction.
-
-| Шаг | Содержание |
-|---|---|
-| 1 | SimTime-компонент (детерминизм-харнесс потребляет сразу) |
-| 2 | SunSky/Environment базово в PIE |
-| 3 | Небо/туман как рендер-подсистема, weather state machine |
-| 4 | Объёмный туман, WeatherVolume, поверхностные эффекты, полное golden-соответствие |
 
 ### Пайплайн ассетов и формат .fpf
 
@@ -749,7 +736,7 @@ flux-assetc ПИШЕТ формат и знает все кодеки; flux-asse
 
 - UUID-хэндлы вместо путей, реестр с ref-counting.
 - Асинхронная загрузка через job system, стриминг с приоритетами и eviction.
-- Multi-pack: игра = набор .fpf (базовый + DLC + патчи). РЕЗОЛВИНГ ПЕРЕСЕЧЕНИЙ (задел под моддинг): упорядоченный список источников VFS, ПОЗДНИЙ источник перекрывает РАННИЙ — параметр загрузчика с первого дня.
+- Multi-pack: игра = набор .fpf (базовый + DLC + патчи). РЕЗОЛВИНГ ПЕРЕСЕЧЕНИЙ (основа моддинга): упорядоченный список источников VFS, ПОЗДНИЙ источник перекрывает РАННИЙ — параметр загрузчика.
 - Горячая перезагрузка в dev-сборках (watcher исходников → перекомпиляция → reload).
 
 ## Геймплей
@@ -785,14 +772,6 @@ flux-anim/src/
 - Dirty-tracking: AnimPlayer dirty при смене state/весов; диффы → сеть и SaveState.
 - Анимационный LOD: сущности в ярусах Delta/Coarse получают пониженную частоту sampling (каждые 2–4 тика) или скип — связь с релевантностью, не отдельная система.
 - Детерминизм: все операции в фиксированных тиках, без зависимости от framerate.
-
-| Шаг | Содержание |
-|---|---|
-| 1 | Компоненты + базовая выборка клипа (без IK/blend) — PIE-персонаж |
-| 2 | State machine + простые переходы (idle→run→jump) |
-| 3 | Blending (2 слоя) + ретаргетинг + root motion |
-| 4 | IK (foot placement) + ragdoll sync |
-| 5 | Оптимизации: анимационный LOD, culling, event-compression |
 
 ### AI и навигация
 
@@ -860,9 +839,9 @@ flux-ai/src/
 
 Rapier НЕ используется. f64 относительно канона, вне sim-region rebase; симуляция детерминированная (fixed tick, seeded-RNG).
 
-> **Разделение этапов**
+> **Два слоя**
 >
-> Полное физическое ядро (broadphase/narrowphase, solver, CCD, joints) — этап 6. МИНИМАЛЬНЫЙ collision-слой (свипы/касты капсул и лучей по запечённой геометрии тайлов, без solver) — этап 3 как часть KCC-минимума (PIE без ходьбы невозможен).
+> Collision-слой (свипы/касты капсул и лучей по запечённой геометрии тайлов, без solver) обслуживает KCC и PIE. Полное физическое ядро (broadphase/narrowphase, solver, CCD, joints) — отдельный слой поверх того же интерфейса.
 
 #### Kinematic Character Controller
 
@@ -872,12 +851,12 @@ Rapier НЕ используется. f64 относительно канона,
 
 | Блок | Контракт |
 |---|---|
-| Коллизия | капсула (единственная на старте), запросы через physics-канал «character» |
+| Коллизия | капсула (единственная базовая форма), запросы через physics-канал «character» |
 | Ground detection | grounded/airborne по лучам/свипам С ГИСТЕРЕЗИСОМ; высота+нормаль — читает flux-anim для foot placement |
 | Steps & slopes | шаг до H (конфиг), наклон до θ, сверх — скольжение (параметр) |
 | Root motion × controller | ЕДИНОВЛАДЕНИЕ: анимация двигает — контроллер нет, и наоборот; переход флагом из flux-anim; конфликт = ошибка конфигурации |
 | Ragdoll-переход | kinematic capsule → dynamic ragdoll; обратный — getup-анимация с blend, позиция капсулы восстанавливается детерминированно |
-| Подвижные платформы | движение «относительно платформы» через parent-frame в тике (обязательный пункт) |
+| Подвижные платформы | движение «относительно платформы» через parent-frame в тике |
 
 #### Сеть: персонаж client-owned
 
@@ -892,13 +871,6 @@ Rapier НЕ используется. f64 относительно канона,
 - Координаты: sim-region f32, канон — на входе/выходе тика.
 - За пределами контроллера: лестницы через special-mesh, транспортная иерархия — геймплейный слой; контроллер даёт примитивы (grounded, attach-point).
 
-| Шаг | Содержание |
-|---|---|
-| 1 | Капсула + ground + базовый move + минимальный collision-слой (ЭТАП 2 общего плана, для PIE) |
-| 2 | Steps/slopes, подвижные платформы |
-| 3 | Сетевая схема client-owned/сверка/rewind-replay |
-| 4 | Ragdoll-переходы (с flux-anim) |
-
 ### Звук
 
 **Крейт:** `flux-audio` · **ID:** `audio`
@@ -909,7 +881,7 @@ cpal — платформенный слой (аналог winit для окон
 flux-audio/src/
 ├── device/       # вывод: cpal как платформенный бэкенд (измерительный слой)
 ├── mixer/        # свой микшер: голоса, граф, шины, приоритеты
-├── spatial/      # 3D-позиционирование: pan, дистанция, HRTF (позже), реверб-зоны
+├── spatial/      # 3D-позиционирование: pan, дистанция, HRTF, реверб-зоны
 ├── dsp/          # фильтры, delay, convolution reverb, compressor
 ├── codec/        # декодеры: symphonia (Vorbis/FLAC/PCM), opus
 ├── streaming/    # потоковая загрузка длинных звуков из .fpf чанками
@@ -929,7 +901,7 @@ flux-audio/src/
 
 - Два уровня: декларативный (что/куда играет — шины, события) и сигнальный (как звук течёт по DSP-цепочке).
 - Консольная модель: голоса → шины → мастер; Routing = Direct(BusId) | Send { bus, level } | Return(BusId); send/return — единственный механизм общих эффектов (реверб помещения — на return-шине, send-уровни по зонам — preset per-tile).
-- Шины статичные, задаются контентом (music, sfx, dialog, ambience — четыре на старте); голоса динамичные. Ацикличность графа проверяется при загрузке ассетов.
+- Шины статичные, задаются контентом (music, sfx, dialog, ambience — четыре базовые); голоса динамичные. Ацикличность графа проверяется при загрузке ассетов.
 - Sidechain — control-rate путь (раз на аудио-блок, не на сэмпл): dialog-шина подаёт envelope на компрессоры music/sfx; переиспользуется как дакинг «важное/неважное».
 - Голосовой пул фиксированный (256 voices); приоритет вытеснения = дистанция × важность × возраст; диалоги — приоритет выше любых SFX.
 - Виртуализация: голос вне ярусов релевантности (2/3) не смешивается — доигрывается виртуально (таймер), «вступает» при возврате. Аудио-LOD — ПЯТЫЙ потребитель RelevanceSystem.
@@ -941,9 +913,9 @@ flux-audio/src/
 
 **Крейт:** `flux-ui` · **ID:** `ui`
 
-In-game UI — свой immediate-mode с первого дня; редактор — egui. Общий актив — текстовый рендер: SDF-атласы, shaping, кэш глифов пишутся один раз.
+In-game UI — свой immediate-mode; редактор — egui. Общий актив — текстовый рендер: SDF-атласы, shaping, кэш глифов пишутся один раз.
 
-- In-game UI — свой immediate-mode С ПЕРВОГО ДНЯ: HUD неразрывно связан с render graph (свой pass, свои блендинги, шрифты через общий текстовый пайплайн), с input actions (фокус-навигация геймпадом — это действия), с DPI-логикой flux-platform.
+- In-game UI — свой immediate-mode: HUD неразрывно связан с render graph (свой pass, свои блендинги, шрифты через общий текстовый пайплайн), с input actions (фокус-навигация геймпадом — это действия), с DPI-логикой flux-platform.
 - Editor — egui: docking, tree views, инспекторы писать своё — самоубийственно; редактор не грузится в игру.
 - Общий актив — текстовый рендер: egui-бэкенд редактора использует те же SDF-атласы (кастомные font textures). Renderer egui — через наш render graph (отдельный pass).
 
@@ -955,13 +927,13 @@ flux-ui/src/
 ├── input/        # фокус-навигация из flux-platform actions
 ├── widgets/      # кнопка, слайдер, dropdown, tooltip...
 ├── localization/ # строки по UUID-ключам, IME-стык с platform
-└── egui_bridge/  # интеграция для редактора (этап 6)
+└── egui_bridge/  # интеграция для редактора
 ```
 
 - Retain-гибридность: НЕ чистый egui-style «пересчитываем всё каждый кадр» — layout-дерево пересчитывается только по dirty-флагам на виджетах, draw-список батчится; пересборка батчей только для изменённых. Чистый immediate-mode для сложного HUD в 4K не тянет.
-- Анимации (tween-ы на виджетах) — в ядре с первого дня; дообучить потом почти невозможно.
+- Анимации (tween-ы на виджетах) — в ядре; дообучить потом почти невозможно.
 - Локализация: строки по ключам-UUID как ассеты в .fpf (снимает локализационные паки DLC); литералы строк в коде запрещены.
-- RTL-языки (арабский) влияют на layout с первого дня (rustybuzz обрабатывает bidi).
+- RTL-языки (арабский) влияют на layout с самого начала (rustybuzz обрабатывает bidi).
 - UI-координаты — logical pixels (DPI-модель из flux-platform).
 
 ### Скриптинг: Lua 5.4
@@ -974,7 +946,7 @@ flux-ui/src/
 |---|---|
 | Язык геймплейных скриптов | Lua 5.4 через mlua (LuaJIT отдельно не обещаем) |
 | Rust hot-reload | НЕ скриптинг; отдельная тема для системного кода |
-| Visual scripting | этап 7+ как frontend к тому же VM |
+| Visual scripting | отдельный frontend к тому же VM |
 | Доступ к миру | события и команды, НЕ прямое чтение ECS |
 | Состояние | явные поля с маркером сейва; UUID-стабильность |
 | Стриминг | скрипт = компонент ScriptRef { uuid, state }, живёт в тайле, усыплён при выгрузке |
@@ -988,7 +960,7 @@ flux-script/src/
 ├── lua/         # бэкенд: mlua, API-биндинги
 ├── api/         # движковый API для скриптов: события, запросы, команды
 ├── registry/    # реестр скриптов: UUID → ассет, hot-reload, приоритеты
-└── graph/       # (этап 7+) visual scripting frontend к тому же VM
+└── graph/       # visual scripting frontend к тому же VM
 ```
 
 #### Песочница-политики
@@ -998,7 +970,7 @@ flux-script/src/
 - Скрипты — ассеты: UUID в .fpf, hot-reload в dev по перечитыванию файла.
 - API-слой: узкий набор операций (spawn entity, read transform, play sound, set state), не весь мир — перформанс, песочница, сейвы.
 
-Подготовительные шаги ДО flux-script: событийная шина ECS проектируется с учётом «событие может дойти до скрипта» (on_collision, on_trigger_enter, on_custom); скриптовое состояние сериализуется по SchemaRegistry — та же схема полей, что для инспектора и сейвов.
+Инварианты: событийная шина ECS допускает доставку события в скрипт (on_collision, on_trigger_enter, on_custom); скриптовое состояние сериализуется по SchemaRegistry — та же схема полей, что для инспектора и сейвов.
 
 ### Сетевой слой
 
@@ -1008,7 +980,7 @@ flux-script/src/
 
 > **Запрещено тянуть**
 >
-> flux-graphics, flux-audio; flux-script — через событийную шину. Headless-сборка — CI-цель server с этапа 1.
+> flux-graphics, flux-audio; flux-script — через событийную шину. Headless-сборка — отдельная цель сборки.
 
 ```text
 flux-net/src/
@@ -1025,7 +997,7 @@ flux-net/src/
 ├── topology/      # region-нода (~6 км², ~20 нод/мир), hub маршрутизация,
 │                  # LoadDegrader — зональная деградация тика
 ├── persistence/   # ИНТЕРФЕЙСЫ: снапшоты зон + event sourcing journal
-└── loopback.rs    # вся репликация в одном процессе (ранний подэтап flux-net)
+└── loopback.rs    # вся репликация в одном процессе
 ```
 
 RelevanceSystem — один расчёт, ПЯТЬ потребителей (сеть: частоты репликации 15-20 / 2-5 / 0.5-1 / по событиям Гц; flux-scene: приоритет стриминга тайлов; симуляция: simulation LOD частота физического тика; flux-anim: анимационный LOD; flux-audio: виртуализация голосов).
@@ -1041,20 +1013,12 @@ RelevanceSystem — один расчёт, ПЯТЬ потребителей (с
 - Цикл зависимостей разорван контрактом: trait RelevanceProvider в flux-core/contracts, реализация в flux-net; flux-scene потребляет через фасад.
 - Репликация: дельты по dirty-tracking ECS (не полные снапшоты); пер-клиентский байтовый бюджет; ярус 0 не режется никогда, режутся 1→2→3 по PriorityRanker.
 - Квантизация обязательна (детерминизм). NetworkingSettings — по паттерну GraphicsSettings: цели и капы в конфиге, лимиты — производные.
-- Детерминизм — проверяемый инвариант: CI-тест «две headless-ноды с одним вводом → один стейт» с этапа 3 (гейт G3).
+- Детерминизм — проверяемый инвариант: CI-тест «две headless-ноды с одним вводом → один стейт».
 - Интеграции: скрипты как компоненты — состояние попадает в репликацию автоматически; spatial events с радиусом доставки; coarse-маркеры игроков — рендер обязан уметь рисовать без ECS-сущности.
-
-| Подэтап flux-net | Содержание |
-|---|---|
-| 1 | Loopback + RelevanceSystem + дельты + SimTick + харнесс |
-| 2 | UDP-слой, каналы, квантизация, clock sync, один регион + клиент |
-| 3 | ownership + handoff, hub-топология, multi-region Loopback |
-| 4 | персистентность, деградация, нагрузочные боты до 5000 |
-| 5+ | криптография, античит-интерфейсы |
 
 ## Инструменты
 
-_editor, flux-build_
+_editor, flux-build, flux-release_
 
 ### Build-оркестрация
 
@@ -1089,46 +1053,20 @@ flux-build/src/
 └── cli.rs         # CLI-интерфейс
 ```
 
-| Этап | Содержание |
-|---|---|
-| 1 | DAG + локальный кэш + assetc-степы (инкрементальность с первого дня) |
-| 2 | Шейдерные ступени |
-| 3 | Пакинг + манифесты + hot-reload |
-| 4 | Дельта-патчи, shipping-проекция, распределённый кэш |
-| 5 | Отчёты достижимости |
-
 ### Релиз
 
 **Крейт:** `tools/flux-release` · **ID:** `release`
 
-Один инструмент на весь релизный цикл: Conventional Commits → semver bump →
-версия в `Cargo.toml` → `CHANGELOG.md` → commit + annotated tag. Без Node и
-`semantic-release`: только `git`, `cargo` и опциональные `gh` /
-`cargo-semver-checks` (ADR-0040).
+Один инструмент на весь релизный цикл: Conventional Commits → semver bump → версия в `Cargo.toml` → `CHANGELOG.md` → commit + annotated tag. Без Node и `semantic-release`: только `git`, `cargo` и опциональные `gh` / `cargo-semver-checks` (ADR-0040).
 
 #### Контракты
 
-- **Коммиты** — Conventional Commits 1.0: `type(scope)!: subject`,
-  футеры `BREAKING CHANGE:`/`BREAKING-CHANGE:`. Merge-коммиты,
-  `chore(release)` и заголовки с `[skip release]` исключаются.
-- **Версии** — `feat` → minor, `fix`/`perf`/`revert` → patch, breaking → major;
-  для `0.x` breaking по умолчанию даёт minor (major включает
-  `bump_major_on_breaking_below_1_0`). Pre-release каналы `alpha`/`beta`/`rc`
-  инкрементят номер внутри канала, смена канала начинает с `.1`.
-- **Changelog** — Keep a Changelog: секции по типу (`Breaking/Features/Fixes/
-  Performance/Refactoring/Reverts/Documentation/Internal`), внутри — модуль
-  (`scope`), затем пункты; ссылки на коммиты, локализация en/ru. Внешний
-  шаблон получает `{version}`/`{date}`/`{repo_url}`/`{sections}`. Вставка
-  перед первой `## ` идемпотентна: повторный запуск не дублирует версию.
-- **Манифесты** — `workspace.package.version` или `[package].version` через
-  `toml_edit` без потери форматирования; path-зависимости с `version`
-  обновляются только по имени пакета. Режимы `fixed` (одна версия/тег) и
-  `independent` (версия на пакет).
-- **Идемпотентность** — существующий тег делает `release` no-op; `--dry-run`
-  не пишет ни файлов, ни коммитов/тегов.
-- **Дисциплина CI** — `check --commits from..to --strict` на PR-диапазоне;
-  `release` только на разрешённой ветке; `--package`, публикация, GitHub
-  Release (gh или API) и `semver-checks` — opt-in.
+- **Коммиты** — Conventional Commits 1.0: `type(scope)!: subject`, футеры `BREAKING CHANGE:`/`BREAKING-CHANGE:`. Merge-коммиты, `chore(release)` и заголовки с `[skip release]` исключаются.
+- **Версии** — `feat` → minor, `fix`/`perf`/`revert` → patch, breaking → major; для `0.x` breaking по умолчанию даёт minor (major включает `bump_major_on_breaking_below_1_0`). Pre-release каналы `alpha`/`beta`/`rc` инкрементят номер внутри канала, смена канала начинает с `.1`.
+- **Changelog** — Keep a Changelog: секции по типу (`Breaking/Features/Fixes/Performance/Refactoring/Reverts/Documentation/Internal`), внутри — модуль (`scope`), затем пункты; ссылки на коммиты, локализация en/ru. Внешний шаблон получает `{version}`/`{date}`/`{repo_url}`/`{sections}`. Вставка перед первой `## ` идемпотентна: повторный запуск не дублирует версию.
+- **Манифесты** — `workspace.package.version` или `[package].version` через `toml_edit` без потери форматирования; path-зависимости с `version` обновляются только по имени пакета. Режимы `fixed` (одна версия/тег) и `independent` (версия на пакет).
+- **Идемпотентность** — существующий тег делает `release` no-op; `--dry-run` не пишет ни файлов, ни коммитов/тегов.
+- **Дисциплина CI** — `check --commits from..to --strict` на PR-диапазоне; `release` только на разрешённой ветке; `--package`, публикация, GitHub Release (gh или API) и `semver-checks` — opt-in.
 
 ```text
 tools/flux-release/src/
@@ -1141,13 +1079,6 @@ tools/flux-release/src/
 ├── release.rs    # preview/apply/check/init/doctor, opt-in publish/gh
 └── main.rs       # clap CLI
 ```
-
-| Этап | Содержание |
-|---|---|
-| 1 | Парсер коммитов, bump, changelog, manifest; read-only `version`/`changelog` |
-| 2 | `release`: запись версии/changelog, commit, annotated tag, идемпотентность |
-| 3 | CI: `check --strict` как PR-гейт, `release --ci --push` по тегу/dispatch |
-| 4 | Opt-in: `--publish`, `--github-release`, `--semver-checks`, `--dry-run` |
 
 ### Редактор
 
@@ -1165,14 +1096,14 @@ flux-editor/src/
 ├── undo/           # command stack, транзакции, диффы сцены
 ├── browser/        # asset browser: реестр, импорт, валидация
 ├── mode/           # edit <-> play, PIE, пауза, стейты мира
-└── collaboration/  # (позже) блокировки ассетов, диффы
+└── collaboration/  # точки расширения: блокировки ассетов, диффы
 ```
 
-#### Три зависимости рантайма ДО этапа 6
+#### Зависимости редактора от рантайма
 
 1. Reflection/schema-система — SchemaRegistry в flux-ecs: спроектирована при создании первого компонента, инспектор рендерится универсально по схеме.
 2. Редактор работает над тем же ECS-миром, не над копией: компоненты Selected/Hidden/EditorOnly/Locked — обычные компоненты, игнорируемые в play-режиме. Стриминг в edit-режиме форсирован: StreamingPolicy::Edit.
-3. Разделение play/edit состояния: edit-мир — авторитет; PIE создаёт клон мира, выход — восстановление edit-состояния. PIE v1 через reload, PIE v2 через World::clone. Action-контекст переключается.
+3. Разделение play/edit состояния: edit-мир — авторитет; PIE создаёт клон мира, выход — восстановление edit-состояния. Механизмы PIE — reload-режим и клон мира (World::clone). Action-контекст переключается.
 
 #### Viewport и гизмо
 
@@ -1200,10 +1131,10 @@ flux-editor/src/
 - Откат создания/удаления — через UUID + generational slots flux-ecs (revived-сущность не спутается с новой на том же слоте).
 - Глубина стека — на диффах canonical-пространства, не снапшотах; сжатие старых записей сверх N — политика.
 
-#### Катсцены / секвенсор (отложено)
+#### Катсцены / секвенсор
 
-- Задел НЕ требуется: база даёт секвенсору всё даром — camera-as-entity, render graph per-viewport (PiP, превью, split-screen), события AnimGraph → скрипты, SimTime, PIE-клон мира, дифф-формат + SaveState.
-- ЕДИНСТВЕННОЕ правило, фиксируемое заранее: треки, влияющие на мир (триггеры, движение акторов, события) — исполняются в СИМУЛЯЦИИ по SimTime: детерминированы, реплицируются, попадают в реплеи.
+- Отдельной подсистемы не требуется: база даёт секвенсору всё — camera-as-entity, render graph per-viewport (PiP, превью, split-screen), события AnimGraph → скрипты, SimTime, PIE-клон мира, дифф-формат + SaveState.
+- ЕДИНСТВЕННОЕ обязательное правило: треки, влияющие на мир (триггеры, движение акторов, события) — исполняются в СИМУЛЯЦИИ по SimTime: детерминированы, реплицируются, попадают в реплеи.
 - Presentation-треки (монтаж камеры, музыка, титры) — wall-clock, но НЕ мутируют мир.
 - Смешанный трек (двигает и кадр, и дверь) = источник рассинхрона клиентов и реплеев — ЗАПРЕЩЁН. Разделение — маркер трека в формате секвенсора.
 - Катсцена × стриминг: перемещение камеры через полкарты — priority-запросы стриминга.
@@ -1212,24 +1143,17 @@ flux-editor/src/
 
 - Браузер — клиент над реестром flux-asset: превью (мини-рендер мешей, миниатюры, waveform), импорт, валидация битых ссылок (красный маркер).
 - Import settings: per-asset конфиг рядом с исходником в репо (<source>.import), переживает реимпорт; артефакты — в .fpf.
-- egui + общий шрифт-пайплайн с flux-ui; docking (egui-dock) — не критично для MVP.
-
-1. Каркас приложения + viewport RTT + editor-камера.
-2. Selection + инспектор по reflection.
-3. Gizmo translate + undo (command stack).
-4. Asset browser + префаб-инстансинг через UI.
-5. PIE v1 (reload-режим).
-6. HLOD/стриминг-визуализация, gizmo rotate/scale, undo на префаб-операции, PIE v2 (World::clone).
+- egui + общий шрифт-пайплайн с flux-ui; docking (egui-dock) — опционально.
 
 ## Сквозные
 
 _паники, pacing, пермутации, тесты, координаты_
 
-### Моддинг: отложенная фаза с фиксированной точкой расширения
+### Моддинг: точки расширения
 
 **ID:** `modding`
 
-Откладывается с фиксированной причиной, задел — дёшево (80% инфраструктуры уже спроектировано).
+Моддинг не вводит новых подсистем — опирается на существующие:
 
 - multi-pack VFS = мод как ещё один пак;
 - UUID-центричный registry = мод переопределяет ассет по UUID;
@@ -1240,17 +1164,17 @@ _паники, pacing, пермутации, тесты, координаты_
 - скрипты как компоненты = база логических модов;
 - детерминизм-харнесс = проверка «мод не ломает симуляцию».
 
-#### Рантайм-задел, закладываемый СЕГОДНЯ
+#### Рантайм-контракты
 
 1. Упорядоченное разрешение UUID между паками в VFS (поздний источник перекрывает ранний — мод поверх ванилы) — параметр загрузчика.
 2. Слот подписи в манифесте паков — резерв поля БЕЗ смены формата.
-3. Правило модифицируемости: мод может менять ТОЛЬКО данные, помеченные разметкой в SchemaRegistry (#[replicated]/#[save]-классы); WIRE-ПРОТОКОЛ модами НЕ расширяется — иначе любой мод ломает сетевую совместимость. Правило вводится сейчас — после появления модов его не ввести.
+3. Правило модифицируемости: мод может менять ТОЛЬКО данные, помеченные разметкой в SchemaRegistry (#[replicated]/#[save]-классы); WIRE-ПРОТОКОЛ модами НЕ расширяется — иначе любой мод ломает сетевую совместимость.
 
-#### Осознанно отложено (с точкой расширения)
+#### Точки расширения
 
 - Sandbox стороннего кода (WASM): изолированный runtime — отдельная подсистема; точка расширения — единый скриптовый ABI в flux-script (внутренние и внешние скрипты для ECS выглядят одинаково).
 - Подпись и валидация модов: требует инфраструктуры распространения; точка расширения — слот подписи в манифесте.
-- Политика совместимости версий модов — продуктовая проблема, решается на опыте через orphaned-политику.
+- Политика совместимости версий модов — продуктовая проблема, решается через orphaned-политику.
 
 ### Ошибки и паники (ADR-0012)
 
@@ -1327,13 +1251,13 @@ Vulkan: VK_PRESENT_MODE_*; DX12: Present() + SwapInterval. Переключен�
 
 - Burstы CPU → time-box систем в scheduler (бюджет per-stage).
 - Burstы GPU → вариативность качества (VramBudget + presets).
-- OS-планировщик → frame limiter (целевой FPS с полкадра задержки).
+- OS-планировщик → frame limiter (целевой FPS с полкадром задержки).
 - Presentation timing: VK_GOOGLE_display_timing / present statistics, DXGI_FRAME_STATISTICS — «когда кадр реально показан»; без этого не отличить медленный рендер от медленной очереди презентации.
-- Метрики профайлера с первого дня: percentiles frametime (P99), пропущенные интервалы present, delta запрошенного/фактического present-времени — в dev-overlay.
+- Метрики профайлера: percentiles frametime (P99), пропущенные интервалы present, delta запрошенного/фактического present-времени — в dev-overlay.
 
 > **Input latency**
 >
-> raw mouse + таймстемпы, input buffering между шагами sim — уже зафиксировано; late-latch — главная экономия; Mailbox + 2 frames-in-flight не копят latency в очереди (FIFO при опозданиях +2 кадра ~33 мс); vendor low-latency API (Reflex/Anti-Lag) — ячейка в FeatureSet, не блокер.
+> raw mouse + таймстемпы, input buffering между шагами sim; late-latch — главная экономия; Mailbox + 2 frames-in-flight не копят latency в очереди (FIFO при опозданиях +2 кадра ~33 мс); vendor low-latency API (Reflex/Anti-Lag) — ячейка в FeatureSet, не блокер.
 
 ### Шейдерные пермутации (ADR-0014)
 
@@ -1349,12 +1273,12 @@ Vulkan: VK_PRESENT_MODE_*; DX12: Present() + SwapInterval. Переключен�
 
 - Наборы keywords: pipeline (render graph/FeatureSet: CLUSTERED_LIGHTING, SHADOWS_CSM), mesh (SKINNING, MORPH_TARGET), material (NORMAL_MAP, PARALLAX, EMISSIVE).
 - Полный ключ = pipeline × mesh × material — вычисляется в extract, без ECS и блокировок.
-- Валидация биндингов на этапе компиляции: шейдер требует биндинг, которого пермутация не получит — ошибка сборки, не чёрный экран в проде.
+- Валидация биндингов при компиляции: шейдер требует биндинг, которого пермутация не получит — ошибка сборки, не чёрный экран в проде.
 - UUID варианта детерминированный: hash(base shader UUID + keyword-маска).
 
 > **Runtime-ядро (ADR-0036)**
 >
-> `ShaderDeclaration` из `shader.json` (stages, pipeline_variants, три набора keywords, vertex_inputs, биндинги), `KeywordMask` (бит = индекс keyword в декларации), `PermutationRequest` с FNV-1a-ключом, `ShaderLibrary` с прекомпилированным ядром fallback-ов и `PermutationCache` (байткод/PSO/материал). DXC-компиляция HLSL → SPIR-V — I6b.
+> `ShaderDeclaration` из `shader.json` (stages, pipeline_variants, три набора keywords, vertex_inputs, биндинги), `KeywordMask` (бит = индекс keyword в декларации), `PermutationRequest` с FNV-1a-ключом, `ShaderLibrary` с прекомпилированным ядром fallback-ов и `PermutationCache` (байткод/PSO/материал). DXC-компиляция HLSL → SPIR-V — путь flux-assetc.
 
 #### Компиляция off-demand
 
@@ -1411,7 +1335,7 @@ Fuzzing: .fpf-парсер (cargo-fuzz/libFuzzer, coverage-guided), десери
 
 Perf — бюджетные гейты: шаг симуляции 16,6 мс, extract 1 мс, компиляция пермутации, загрузка тайла, применение дельты тика; criterion-класс бенчей; регрессия > 5% = красный nightly; выделенные раннеры без виртуализации, фиксация частоты CPU.
 
-Soak: еженедельно 24–48 ч headless-симуляции с ботами; метрики: RSS-тренд, frametime-тренд, расхождения дельт. Единственный тест, ловящий «работает день — начинает тормозить».
+Soak: 24–48 ч headless-симуляции с ботами; метрики: RSS-тренд, frametime-тренд, расхождения дельт. Единственный тест, ловящий «работает день — начинает тормозить».
 
 | Раннер | Нагрузка | Частота |
 |---|---|---|
@@ -1434,10 +1358,10 @@ Release-цель: Windows. Linux — dev/CI (не release); macOS/Switch/кон�
 
 Консоли НЕ удалены из архитектуры навсегда: контракт RHI позволяет добавить бэкенд (PS AGC/GNM — приватный крейт за NDA, Xbox — GDK-расширения DX12 за feature-gate) без изменения trait-набора.
 
-- RHI-бэкенды: DX12 — primary release-бэкенд (Windows); Vulkan — dev/CI (lavapipe, отладка) и остаётся PRIMARY dev-бэкендом: CI-гейты (headless, golden PR-тесты) живут на нём.
+- RHI-бэкенды: DX12 — primary release-бэкенд (Windows); Vulkan — dev/CI (lavapipe, отладка) и PRIMARY dev-бэкенд: CI-гейты (headless, golden PR-тесты) живут на нём.
 - Память: только дискретные GPU и iGPU Windows — формула VramBudget без консольных профилей.
 - Toolchain: один публичный CI (linux/windows), приватные консольные раннеры не требуются.
-- Crash: Windows-реализация (MiniDumpWriteDump) — единственная на старте; контракт CrashHandler сохраняет точку расширения.
+- Crash: Windows-реализация (MiniDumpWriteDump) — базовая; контракт CrashHandler сохраняет точку расширения.
 - Input: Xbox-контроллер через gilrs (XInput) — основная поддержка; DualSense через HID — опционально.
 - Детерминизм: cross-platform CI-тест (linux x86 vs windows x86) остаётся инвариантом дисциплины флоатов.
 - Ассеты .fpf — платформенно-нейтральны; один пайплайн — только флаги.
@@ -1472,23 +1396,3 @@ Release-цель: Windows. Linux — dev/CI (не release); macOS/Switch/кон�
 > D32 reversed-Z (near=1, far=0, float depth) + бесконечная far-plane матрица; в RHI — конфиг depth-stencil state.
 
 Затраты: одна конверсия на трансформ в extract (микросекунды на кадр), один детерминированный rebase в симуляции, один канонический тип. Альтернатива «f32 везде» — плавающий мир с трещинами чанков на 8-м км; «f64 везде» — отклонено (память, скорость, GPU-непригодность).
-
-### Порядок реализации и риски
-
-**ID:** `risks`
-
-Семь этапов от скелета workspace до редактора. Риски — с митигацией.
-
-1. Скелет workspace — workspace Cargo.toml, все крейты-заготовки, flux-math, flux-core (время, логгинг, job system).
-2. flux-ecs — архетипы, запросы, планировщик систем.
-3. flux-platform + flux-engine — окно, ввод, цикл кадра, фасад.
-4. flux-graphics — RHI + бэкенд Vulkan (ash), треугольник → G-buffer → PBR.
-5. flux-asset + flux-scene — пайплайн ассетов, сцены, сериализация.
-6. Бэкенд DX12, physics, audio, ui.
-7. flux-editor — редактор сцены.
-
-| Риск | Митигация |
-|---|---|
-| Vulkan/DX12 через ash — многословный API | Хорошая эргономика RHI-слоя |
-| Собственная ECS — большой объём | Benchmarks и простая первая версия без спекулятивных оптимизаций |
-| DX12 требует Windows SDK toolchain при сборке | Учитывается в CI-матрице и этапности |
