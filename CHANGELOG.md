@@ -4,6 +4,14 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.17.2] - 2026-11-15
+
+### Fixes
+
+#### graphics
+
+- UNORM-формат вывода для headless WSI ([df95de0](https://github.com/PaoloFernetti/fluxengine/commit/df95de0e5487f7e1e1ed593437cc685b2aa292bd))
+
 ## [0.17.1] - 2026-11-15
 
 ### Fixes
