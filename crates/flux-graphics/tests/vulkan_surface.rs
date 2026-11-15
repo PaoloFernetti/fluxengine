@@ -10,9 +10,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use flux_graphics::{
-    BarrierBatch, BufferUsage, FrameFeatures, FrameParams, GpuBufferDesc, GpuFrame, GpuImageDesc,
-    ImageId, ImageState, RenderPassDesc, RhiDevice, SurfaceTarget, SwapchainDesc, TextureFormat,
-    TextureUsage, VulkanDevice,
+    decode_rgba16f, decode_srgb_u8, BarrierBatch, BufferUsage, FrameFeatures, FrameParams,
+    FrameStage, GpuBufferDesc, GpuFrame, ImageId, ImageState, RenderPassDesc, RhiDevice,
+    SurfaceTarget, SwapchainDesc, TextureFormat, VulkanDevice,
 };
 
 fn runtime_device() -> Option<VulkanDevice> {
@@ -177,66 +177,46 @@ fn ui_stub_is_presented_to_swapchain() {
         GpuFrame::with_features(&mut device, size, size, FrameFeatures::none()).unwrap();
     let params = FrameParams::default();
 
-    // Эталон: тот же кадр без UI в offscreen-образ того же формата.
-    let reference = device
-        .create_image(
-            &GpuImageDesc::new("ui-reference", size, size, TextureFormat::Bgra8Srgb).with_usage(
-                TextureUsage {
-                    render_target: true,
-                    transfer_src: true,
-                    ..TextureUsage::none()
-                },
-            ),
-        )
-        .unwrap();
-    let mut commands = device.create_command_buffer().unwrap();
-    commands.begin().unwrap();
-    let mut batch = BarrierBatch::new();
-    batch.transition(
-        reference,
-        ImageState::Undefined,
-        ImageState::ColorAttachment,
-    );
-    commands.barriers(&batch).unwrap();
-    commands.end().unwrap();
-    commands.finish().unwrap();
-    frame
-        .render_to(&mut device, &params, reference, TextureFormat::Bgra8Srgb)
-        .unwrap();
-    let reference_bytes = read_image(
-        &mut device,
-        reference,
-        ImageState::ColorAttachment,
-        size,
-        size,
-    );
+    // Эталон без UI: обычный кадр без финального прохода `frame.ui`.
+    // TAA выключен, поэтому тонемап пишет прямо в выходной образ (RGBA16F).
+    frame.render(&mut device, &params).unwrap();
+    let reference = frame.readback(&mut device, FrameStage::Taa).unwrap();
 
     let index = frame
         .present(&mut device, &params, &mut *swapchain)
         .unwrap();
     let image = swapchain.image(index).expect("presented image");
-    let presented = read_image(&mut device, image, ImageState::Present, size, size);
+    // Headless-цепочка offscreen: present не меняет layout, образ остаётся
+    // цветовой целью последнего прохода.
+    let presented = read_image(&mut device, image, ImageState::ColorAttachment, size, size);
 
-    let pixel = |bytes: &[u8], x: u32, y: u32| {
+    // Эталон — линейный RGBA16F; presented — Bgra8Srgb (байты B, G, R, A).
+    let reference_red = |x: u32, y: u32| decode_rgba16f(&reference, (y * size + x) as usize)[0];
+    let presented_red = |x: u32, y: u32| {
         let offset = ((y * size + x) * 4) as usize;
-        [
-            bytes[offset],
-            bytes[offset + 1],
-            bytes[offset + 2],
-            bytes[offset + 3],
-        ]
+        decode_srgb_u8(presented[offset + 2])
     };
-    // Панель UI-stub затемняет левый верхний угол.
-    let panel_reference = pixel(&reference_bytes, 2, 2);
-    let panel_ui = pixel(&presented, 2, 2);
+
+    // Вне панели UI не искажает кадр.
+    let outside_reference = reference_red(size - 2, size - 2);
+    let outside_ui = presented_red(size - 2, size - 2);
     assert!(
-        panel_ui[0] + 10 < panel_reference[0],
-        "UI panel not applied: reference={panel_reference:?} presented={panel_ui:?}"
+        (outside_reference - outside_ui).abs() <= 0.01,
+        "UI altered pixels outside the panel: reference={outside_reference} presented={outside_ui}"
     );
-    // Вне панели кадры совпадают: TAA выключен, рендер детерминирован.
-    let outside_reference = pixel(&reference_bytes, size - 2, size - 2);
-    let outside_ui = pixel(&presented, size - 2, size - 2);
-    assert_eq!(outside_reference, outside_ui);
+
+    // В панели шейдер применяет lerp(scene, 0.02, 0.8) = 0.2·scene + 0.016.
+    let panel_reference = reference_red(2, 2);
+    let panel_ui = presented_red(2, 2);
+    let expected = 0.2 * panel_reference + 0.016;
+    assert!(
+        (panel_ui - expected).abs() <= 0.02,
+        "UI panel not applied: reference={panel_reference} presented={panel_ui} expected={expected}"
+    );
+    assert!(
+        (panel_ui - outside_ui).abs() > 0.005,
+        "UI panel is indistinguishable from the background: panel={panel_ui} outside={outside_ui}"
+    );
 
     device.wait_idle().unwrap();
     assert_eq!(
@@ -245,7 +225,6 @@ fn ui_stub_is_presented_to_swapchain() {
         "validation log is dirty"
     );
     frame.destroy(&mut device);
-    assert!(device.destroy_image(reference));
     drop(swapchain);
     assert!(device.destroy_surface(surface));
     device.wait_idle().unwrap();
