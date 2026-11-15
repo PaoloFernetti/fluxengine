@@ -666,10 +666,16 @@ PSNR каждой стадии против CPU-эталона ≥ 60 дБ; vali
 - [x] FeatureRegistry для авто-меню
 - [x] `SettingsChange` → rebuild графа; resolution/vsync (Device не пересоздаётся)
 - [x] Персистентность настроек (JSON/RON)
-- [ ] Рантайм-обвязка: применить swapchain/граф/пермутации по `SettingsChange`
+- [x] Рантайм-обвязка: применить swapchain/граф/пермутации по `SettingsChange`
+      (`render::settings_runtime::SettingsRuntime`, `FrameFeatures`, ADR-0044)
 
 **Приёмка**: смена пресета не пересоздаёт Device; настройки персистентны;
-реестр фич учитывает capabilities. Рантайм-применение — после GPU-проходов.
+реестр фич учитывает capabilities. `SettingsRuntime::apply` пересоздаёт только
+затронутые подсистемы: `vsync`/`present_mode` → swapchain (create-then-swap),
+`ssao`/`bloom`/`taa`/`render_scale` → feature-набор и граф, `preset` →
+поколение пермутаций; `shadow_resolution` зарезервирован до прохода теней.
+Тесты Null проверяют неизменность `DeviceSignature`, смену только swapchain,
+сокращение проходов при отключённых эффектах и размер кадра под render scale.
 
 ### 4.9 Golden-image и профилирование
 

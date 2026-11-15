@@ -76,7 +76,7 @@ flowchart LR
 - Каждый термин из ADR обязан иметь запись в глоссарии канона
   (правило «термин имеет владельца»).
 
-## Индекс (ADR-0001…0027 — архитектурная фаза; 0028…0030 — этап 2; 0031…0033 — этап 3; 0034…0043 — этап 4/инструменты)
+## Индекс (ADR-0001…0027 — архитектурная фаза; 0028…0030 — этап 2; 0031…0033 — этап 3; 0034…0044 — этап 4/инструменты)
 
 | ADR | Решение | Источник |
 |---|---|---|
@@ -123,6 +123,7 @@ flowchart LR
 | 0041 | Сэмплеры: раздельные `SampledImage` + `Sampler` (DXC/SPIR-V и DX12), combined — только совместимость; `ShaderRead` как единственное состояние чтения | flux-graphics |
 | 0042 | GPU-проходы кадра: push constants 64 B, `execute_with`/`compile_with_initial`, G-buffer → SSAO → lighting → bloom → tonemap → TAA, PSNR-эталон от readback предыдущего прохода | flux-graphics |
 | 0043 | `.unitypackage` в flux-assetc: gzip/tar (`flate2`, `tar`), staging, `pathname` → дерево `Assets/`, meta рядом, защита от traversal | tools/flux-assetc |
+| 0044 | Рантайм-применение `GraphicsSettings`: `FrameFeatures`, `SettingsRuntime`, нейтральные clear отключённых эффектов, `render_scale` в `graph` | flux-graphics |
 
 Дополнительные решения, зафиксированные в плане, но не требующие отдельных
 ADR-файлов (частично покрыты выше): input abstraction (flux-platform),
@@ -171,6 +172,10 @@ undo × PIE × стриминг (flux-editor), golden-сейвы, virtual textur
   использует query pools из ADR-0037 и отдаёт `GpuZone` через `zones()`,
   `pass_duration_ns()`, `frame_duration_ns()`; цепочка проходов и их форматы
   не меняются. Отдельное решение не требуется — контракт RHI не расширялся.
+- ADR-0044 уточняет поведение `GraphicsSettings::diff` из ADR-0016:
+  `render_scale` входит в `SettingsChange::graph`, потому что меняет размер
+  изображений кадра; флаги `swapchain`/`pipelines` и отсутствие Device в
+  `SettingsChange` не меняются. Формулировка ADR-0016 не переписывается.
 - Метки `D…` внутри ADR-0041 (`D3`, `D8`) — исторические обозначения работ
   этапа 4; отдельной таблицы долгов больше нет, актуальный порядок — чекбоксы
   этапов 4–7 в [Roadmap.md](../Roadmap.md). Формулировки ADR не переписываются.

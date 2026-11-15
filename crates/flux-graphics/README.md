@@ -23,6 +23,7 @@ Roadmap: [docs/Roadmap.md](../../docs/Roadmap.md). API: [docs/api.md](../../docs
 | `render::tonemap` | ACES/AgX (ADR-0018) | I5 ✅ (CPU-эталон) |
 | `render::post` | bloom/TAA/SSAO — формулы | I5 ✅ (CPU-эталон) |
 | `render::frame` | GPU-проходы кадра, CPU-эталоны и PSNR-гейт | I9c ✅ (ADR-0042) |
+| `render::settings_runtime` | `FrameFeatures` + `SettingsRuntime`: swapchain/граф/пермутации по `SettingsChange` | I9e ✅ (ADR-0044) |
 | `shaders` | `shader.json`, keyword-маски, fallback, кэш 3 уровней | I6 ✅ (DXC — I6b) |
 | `settings` | `GraphicsSettings` v1, `HardwareTier`/`QualityPreset`, FeatureRegistry | I7 ✅ |
 | `golden` | PSNR/SSIM, per-runner baselines, heatmap, `visual_change`-гейт | I8 ✅ |
@@ -117,6 +118,14 @@ flux-graphics = { workspace = true, features = ["vulkan"] }
   шести проходов и отдаёт `zones()`, `pass_duration_ns()`,
   `frame_duration_ns()`; порядок имён — `FRAME_PASS_NAMES`. Null-тест
   проверяет состав и порядок зон без GPU.
+- Рантайм-применение настроек (ADR-0044): `FrameFeatures` (ssao/bloom/taa)
+  строит граф без отключённых проходов, очищая их изображения нейтрально
+  (AO = 1, bloom = 0); `GpuFrame::set_features` переключает набор на живом
+  кадре. `SettingsRuntime::apply` пересоздаёт только затронутые подсистемы:
+  `vsync`/`present_mode` → swapchain, `ssao`/`bloom`/`taa`/`render_scale` →
+  граф и размер кадра, `preset` → `permutation_generation`; Device остаётся
+  жив (`DeviceSignature` не меняется). `render_scale` входит в
+  `SettingsChange::graph`.
 
 ## Проверки
 

@@ -19,6 +19,7 @@ use std::collections::BTreeMap;
 use flux_math::Vec3;
 
 use crate::profile::GpuZone;
+use crate::settings::GraphicsSettings;
 
 use super::super::rhi::{
     BarrierBatch, BindingKind, BufferUsage, CommandBuffer, DescriptorBinding, DescriptorSetDesc,
@@ -65,6 +66,77 @@ fn pass_slot(name: &str) -> Option<u32> {
         .iter()
         .position(|candidate| *candidate == name)
         .map(|index| index as u32)
+}
+
+/// Набор эффектов кадра, управляемый [`GraphicsSettings`] (ADR-0044).
+///
+/// Отключённый эффект не исчезает из графа бесследно: его изображение
+/// очищается нейтральным значением (AO = 1, bloom = 0), поэтому следующие
+/// проходы читают те же слоты без пересборки pipeline-ов.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FrameFeatures {
+    /// SSAO.
+    pub ssao: bool,
+    /// Bloom.
+    pub bloom: bool,
+    /// TAA (включает ping-pong истории).
+    pub taa: bool,
+}
+
+impl FrameFeatures {
+    /// Все эффекты включены (поведение по умолчанию).
+    #[must_use]
+    pub const fn all() -> Self {
+        Self {
+            ssao: true,
+            bloom: true,
+            taa: true,
+        }
+    }
+
+    /// Все эффекты выключены.
+    #[must_use]
+    pub const fn none() -> Self {
+        Self {
+            ssao: false,
+            bloom: false,
+            taa: false,
+        }
+    }
+
+    /// Эффекты из настроек графики.
+    #[must_use]
+    pub fn from_settings(settings: &GraphicsSettings) -> Self {
+        Self {
+            ssao: settings.ssao,
+            bloom: settings.bloom,
+            taa: settings.taa,
+        }
+    }
+
+    /// Имена активных проходов в порядке исполнения.
+    #[must_use]
+    pub fn pass_names(self) -> Vec<&'static str> {
+        let mut names = vec!["frame.gbuffer"];
+        if self.ssao {
+            names.push("frame.ssao");
+        }
+        names.push("frame.lighting");
+        if self.bloom {
+            names.push("frame.bloom");
+        }
+        names.push("frame.tonemap");
+        if self.taa {
+            names.push("frame.taa");
+        }
+        names
+    }
+
+    /// Число активных проходов.
+    #[must_use]
+    pub fn pass_count(self) -> usize {
+        self.pass_names().len()
+    }
 }
 
 /// Параметры кадра: солнце, экспозиция и веса пост-обработки.
@@ -213,6 +285,8 @@ pub struct GpuFrame {
     taa_a: ImageId,
     taa_b: ImageId,
     history_is_a: bool,
+    /// Активные эффекты кадра (ADR-0044).
+    features: FrameFeatures,
     /// Фактические состояния изображений (для `oldLayout` барьеров).
     states: BTreeMap<GraphImageKey, ImageState>,
     sampler: SamplerId,
@@ -225,13 +299,28 @@ pub struct GpuFrame {
 }
 
 impl GpuFrame {
-    /// Создаёт изображения, sampler, pipeline-ы и наборы.
+    /// Создаёт изображения, sampler, pipeline-ы и наборы со всеми эффектами.
     ///
     /// # Errors
     ///
     /// Ошибка RHI: формат/размер не поддержаны, SPIR-V отвергнут или
     /// драйвер не дал память.
     pub fn new(device: &mut dyn RhiDevice, width: u32, height: u32) -> Result<Self, RhiError> {
+        Self::with_features(device, width, height, FrameFeatures::all())
+    }
+
+    /// Создаёт кадр с заданным набором эффектов (ADR-0044).
+    ///
+    /// # Errors
+    ///
+    /// Ошибка RHI: формат/размер не поддержаны, SPIR-V отвергнут или
+    /// драйвер не дал память.
+    pub fn with_features(
+        device: &mut dyn RhiDevice,
+        width: u32,
+        height: u32,
+        features: FrameFeatures,
+    ) -> Result<Self, RhiError> {
         if width == 0 || height == 0 {
             return Err(RhiError::validation("frame size must be non-zero"));
         }
@@ -335,6 +424,16 @@ impl GpuFrame {
         let mut states = BTreeMap::new();
         for image in [taa_a, taa_b] {
             states.insert(GraphImageKey(image.0), ImageState::ColorAttachment);
+        }
+        // Отключённые эффекты читаются следующими проходами как нейтральные:
+        // AO = 1 (нет затенения), bloom = 0 (нет свечения).
+        if !features.ssao {
+            clear_image_with(device, ssao, "frame-ssao-clear", [1.0, 1.0, 1.0, 1.0])?;
+            states.insert(GraphImageKey(ssao.0), ImageState::ColorAttachment);
+        }
+        if !features.bloom {
+            clear_image_with(device, bloom, "frame-bloom-clear", [0.0, 0.0, 0.0, 1.0])?;
+            states.insert(GraphImageKey(bloom.0), ImageState::ColorAttachment);
         }
 
         let sampler = device.create_sampler(
@@ -460,6 +559,7 @@ impl GpuFrame {
             taa_a,
             taa_b,
             history_is_a: true,
+            features,
             states,
             sampler,
             pipelines: FramePipelines {
@@ -486,6 +586,74 @@ impl GpuFrame {
     #[must_use]
     pub fn size(&self) -> (u32, u32) {
         (self.width, self.height)
+    }
+
+    /// Активные эффекты кадра.
+    #[must_use]
+    pub fn features(&self) -> FrameFeatures {
+        self.features
+    }
+
+    /// Число активных проходов в текущей конфигурации.
+    #[must_use]
+    pub fn active_pass_count(&self) -> usize {
+        self.features.pass_count()
+    }
+
+    /// Переключает эффекты без пересоздания Device и pipeline-ов.
+    ///
+    /// Отключённые эффекты получают нейтральное содержимое (AO = 1,
+    /// bloom = 0); при смене TAA история очищается. Возвращает `true`,
+    /// если конфигурация изменилась и граф будет пересобран при следующем
+    /// [`Self::render`].
+    ///
+    /// # Errors
+    ///
+    /// Ошибка RHI при очистке изображений или обновлении набора TAA.
+    pub fn set_features(
+        &mut self,
+        device: &mut dyn RhiDevice,
+        features: FrameFeatures,
+    ) -> Result<bool, RhiError> {
+        if self.features == features {
+            return Ok(false);
+        }
+        if self.features.ssao && !features.ssao {
+            clear_image_with(device, self.ssao, "frame-ssao-clear", [1.0, 1.0, 1.0, 1.0])?;
+            self.states
+                .insert(GraphImageKey(self.ssao.0), ImageState::ColorAttachment);
+        }
+        if self.features.bloom && !features.bloom {
+            clear_image_with(
+                device,
+                self.bloom,
+                "frame-bloom-clear",
+                [0.0, 0.0, 0.0, 1.0],
+            )?;
+            self.states
+                .insert(GraphImageKey(self.bloom.0), ImageState::ColorAttachment);
+        }
+        if self.features.taa != features.taa {
+            clear_image(device, self.taa_a, "frame-taa-a-clear")?;
+            clear_image(device, self.taa_b, "frame-taa-b-clear")?;
+            self.history_is_a = true;
+            for image in [self.taa_a, self.taa_b] {
+                self.states
+                    .insert(GraphImageKey(image.0), ImageState::ColorAttachment);
+            }
+            if features.taa {
+                device.update_descriptor_set(
+                    self.sets.taa,
+                    &[
+                        DescriptorWrite::image(0, 0, self.tonemap),
+                        DescriptorWrite::image(1, 0, self.taa_a),
+                        DescriptorWrite::sampler(2, 0, self.sampler),
+                    ],
+                )?;
+            }
+        }
+        self.features = features;
+        Ok(true)
     }
 
     /// Зоны последнего кадра в порядке [`FRAME_PASS_NAMES`] — FrameStats
@@ -529,13 +697,20 @@ impl GpuFrame {
             FrameStage::Ssao => (self.ssao, ImageState::ShaderRead, 8),
             FrameStage::Hdr => (self.hdr, ImageState::ShaderRead, 8),
             FrameStage::Bloom => (self.bloom, ImageState::ShaderRead, 8),
-            FrameStage::Tonemap => (self.tonemap, ImageState::ShaderRead, 8),
+            FrameStage::Tonemap => {
+                // Без TAA тонемап пишет прямо в выходной образ.
+                if self.features.taa {
+                    (self.tonemap, ImageState::ShaderRead, 8)
+                } else {
+                    (self.taa_a, ImageState::ColorAttachment, 8)
+                }
+            }
             FrameStage::Taa => {
                 // После рендера история указывает на последний записанный выход.
-                let output = if self.history_is_a {
-                    self.taa_a
-                } else {
+                let output = if self.features.taa && !self.history_is_a {
                     self.taa_b
+                } else {
+                    self.taa_a
                 };
                 (output, ImageState::ColorAttachment, 8)
             }
@@ -552,10 +727,20 @@ impl GpuFrame {
         device: &mut dyn RhiDevice,
         params: &FrameParams,
     ) -> Result<(), RhiError> {
-        let (history, output) = if self.history_is_a {
-            (self.taa_a, self.taa_b)
+        let (history, output) = if self.features.taa {
+            if self.history_is_a {
+                (self.taa_a, self.taa_b)
+            } else {
+                (self.taa_b, self.taa_a)
+            }
         } else {
-            (self.taa_b, self.taa_a)
+            // TAA выключен: тонемап пишет прямо в выходной образ.
+            (self.taa_a, self.taa_a)
+        };
+        let tonemap_target = if self.features.taa {
+            self.tonemap
+        } else {
+            output
         };
         let graph = self.frame_graph(history, output)?;
         let plan = graph
@@ -568,7 +753,7 @@ impl GpuFrame {
         let query_pool = self.query_pool;
         commands.reset_query_pool(query_pool, 0, FRAME_QUERY_COUNT)?;
         let (rt0, rt1, rt2, depth) = (self.rt0, self.rt1, self.rt2, self.depth);
-        let (ssao, hdr, bloom, tonemap) = (self.ssao, self.hdr, self.bloom, self.tonemap);
+        let (ssao, hdr, bloom) = (self.ssao, self.hdr, self.bloom);
         let pipelines = &self.pipelines;
         let sets = &self.sets;
         graph.execute_with(&plan, &mut *commands, |pass, commands| {
@@ -612,7 +797,7 @@ impl GpuFrame {
                 }
                 "frame.tonemap" => {
                     let desc = RenderPassDesc::new("frame-tonemap")
-                        .with_color(tonemap)
+                        .with_color(tonemap_target)
                         .with_clear([0.0, 0.0, 0.0, 1.0]);
                     draw(
                         commands,
@@ -638,51 +823,53 @@ impl GpuFrame {
         device.wait_idle()?;
 
         let timestamps = device.read_query_pool(query_pool)?;
-        let mut zones = Vec::with_capacity(FRAME_PASS_COUNT);
-        for (index, name) in FRAME_PASS_NAMES.iter().enumerate() {
-            let start = timestamps.get(index * 2).copied().unwrap_or(0);
-            let end = timestamps.get(index * 2 + 1).copied().unwrap_or(start);
+        let pass_names = self.features.pass_names();
+        let mut zones = Vec::with_capacity(pass_names.len());
+        for name in &pass_names {
+            let slot = pass_slot(name).unwrap_or(0) as usize;
+            let start = timestamps.get(slot * 2).copied().unwrap_or(0);
+            let end = timestamps.get(slot * 2 + 1).copied().unwrap_or(start);
             zones.push(GpuZone::new(name, start, end));
         }
         self.zones = zones;
 
-        // Ping-pong: следующий кадр читает только что записанный выход.
-        self.history_is_a = !self.history_is_a;
-        // Набор TAA теперь читает новый выход, а пишет бывшую историю.
-        let (next_history, next_output) = if self.history_is_a {
-            (self.taa_a, self.taa_b)
-        } else {
-            (self.taa_b, self.taa_a)
-        };
-        debug_assert_eq!(next_history, output);
-        debug_assert_eq!(next_output, history);
         // Фактические состояния после кадра: все чтения — ShaderRead,
         // последний выход — ColorAttachment.
         self.states.clear();
-        for image in [
-            self.rt0,
-            self.rt1,
-            self.rt2,
-            self.depth,
-            self.ssao,
-            self.hdr,
-            self.bloom,
-            self.tonemap,
-            history,
-        ] {
+        let mut read_images = vec![
+            self.rt0, self.rt1, self.rt2, self.depth, self.ssao, self.hdr, self.bloom,
+        ];
+        if self.features.taa {
+            read_images.push(self.tonemap);
+            read_images.push(history);
+        }
+        for image in read_images {
             self.states
                 .insert(GraphImageKey(image.0), ImageState::ShaderRead);
         }
         self.states
             .insert(GraphImageKey(output.0), ImageState::ColorAttachment);
-        device.update_descriptor_set(
-            self.sets.taa,
-            &[
-                DescriptorWrite::image(0, 0, self.tonemap),
-                DescriptorWrite::image(1, 0, next_history),
-                DescriptorWrite::sampler(2, 0, self.sampler),
-            ],
-        )?;
+
+        if self.features.taa {
+            // Ping-pong: следующий кадр читает только что записанный выход.
+            self.history_is_a = !self.history_is_a;
+            // Набор TAA теперь читает новый выход, а пишет бывшую историю.
+            let (next_history, next_output) = if self.history_is_a {
+                (self.taa_a, self.taa_b)
+            } else {
+                (self.taa_b, self.taa_a)
+            };
+            debug_assert_eq!(next_history, output);
+            debug_assert_eq!(next_output, history);
+            device.update_descriptor_set(
+                self.sets.taa,
+                &[
+                    DescriptorWrite::image(0, 0, self.tonemap),
+                    DescriptorWrite::image(1, 0, next_history),
+                    DescriptorWrite::sampler(2, 0, self.sampler),
+                ],
+            )?;
+        }
         Ok(())
     }
 
@@ -764,18 +951,17 @@ impl GpuFrame {
         let key = |image: ImageId| GraphImageKey(image.0);
         let mut graph = RenderGraph::new();
         graph.set_output_size(self.width, self.height);
-        let images = [
-            self.rt0,
-            self.rt1,
-            self.rt2,
-            self.depth,
-            self.ssao,
-            self.hdr,
-            self.bloom,
-            self.tonemap,
-            history,
-            output,
+        let mut images = vec![
+            self.rt0, self.rt1, self.rt2, self.depth, self.ssao, self.hdr, self.bloom,
         ];
+        if self.features.taa {
+            images.push(self.tonemap);
+            images.push(history);
+            images.push(output);
+        } else {
+            // Без TAA тонемап пишет прямо в выходной образ.
+            images.push(output);
+        }
         for image in images {
             graph
                 .add_image(GraphImage::external(key(image), 0))
@@ -791,26 +977,39 @@ impl GpuFrame {
             .color(key(self.rt1))
             .color(key(self.rt2))
             .depth(key(self.depth)))?;
-        add(GraphPass::new("frame.ssao", PassKind::Graphics)
-            .read(key(self.depth))
-            .color(key(self.ssao)))?;
+        if self.features.ssao {
+            add(GraphPass::new("frame.ssao", PassKind::Graphics)
+                .read(key(self.depth))
+                .color(key(self.ssao)))?;
+        }
+        // Lighting всегда читает AO и bloom-слот: отключённые эффекты
+        // очищены нейтральными значениями.
         add(GraphPass::new("frame.lighting", PassKind::Graphics)
             .read(key(self.rt0))
             .read(key(self.rt1))
             .read(key(self.rt2))
             .read(key(self.ssao))
             .color(key(self.hdr)))?;
-        add(GraphPass::new("frame.bloom", PassKind::Graphics)
-            .read(key(self.hdr))
-            .color(key(self.bloom)))?;
+        if self.features.bloom {
+            add(GraphPass::new("frame.bloom", PassKind::Graphics)
+                .read(key(self.hdr))
+                .color(key(self.bloom)))?;
+        }
+        let tonemap_target = if self.features.taa {
+            self.tonemap
+        } else {
+            output
+        };
         add(GraphPass::new("frame.tonemap", PassKind::Graphics)
             .read(key(self.hdr))
             .read(key(self.bloom))
-            .color(key(self.tonemap)))?;
-        add(GraphPass::new("frame.taa", PassKind::Graphics)
-            .read(key(self.tonemap))
-            .read(key(history))
-            .color(key(output)))?;
+            .color(key(tonemap_target)))?;
+        if self.features.taa {
+            add(GraphPass::new("frame.taa", PassKind::Graphics)
+                .read(key(self.tonemap))
+                .read(key(history))
+                .color(key(output)))?;
+        }
         Ok(graph)
     }
 }
@@ -831,6 +1030,15 @@ fn clear_image(
     image: ImageId,
     label: &'static str,
 ) -> Result<(), RhiError> {
+    clear_image_with(device, image, label, [0.0, 0.0, 0.0, 1.0])
+}
+
+fn clear_image_with(
+    device: &mut dyn RhiDevice,
+    image: ImageId,
+    label: &'static str,
+    color: [f32; 4],
+) -> Result<(), RhiError> {
     let mut commands = device.create_command_buffer()?;
     commands.begin()?;
     let mut batch = BarrierBatch::new();
@@ -838,7 +1046,7 @@ fn clear_image(
     commands.barriers(&batch)?;
     let pass = RenderPassDesc::new(label)
         .with_color(image)
-        .with_clear([0.0, 0.0, 0.0, 1.0]);
+        .with_clear(color);
     commands.begin_render_pass(&pass)?;
     commands.end_render_pass()?;
     commands.end()?;
@@ -1175,6 +1383,36 @@ mod tests {
         }
         assert!(frame.frame_duration_ns() >= frame.pass_duration_ns("frame.gbuffer"));
         assert_eq!(frame.pass_duration_ns("missing"), 0);
+        frame.destroy(&mut device);
+    }
+
+    #[test]
+    fn null_frame_skips_disabled_effects() {
+        use crate::rhi::NullDevice;
+
+        let mut device = NullDevice::new();
+        let mut frame = GpuFrame::with_features(&mut device, 8, 8, FrameFeatures::none()).unwrap();
+        assert_eq!(frame.features(), FrameFeatures::none());
+        assert_eq!(frame.active_pass_count(), 3);
+
+        frame.render(&mut device, &FrameParams::default()).unwrap();
+        let names: Vec<&str> = frame.zones().iter().map(|zone| zone.name).collect();
+        assert_eq!(
+            names,
+            vec!["frame.gbuffer", "frame.lighting", "frame.tonemap"]
+        );
+        let tonemap = frame.readback(&mut device, FrameStage::Tonemap).unwrap();
+        assert_eq!(tonemap.len(), 8 * 8 * 8);
+
+        // Включение эффектов пересобирает граф и возвращает все проходы.
+        assert!(frame
+            .set_features(&mut device, FrameFeatures::all())
+            .unwrap());
+        assert!(!frame
+            .set_features(&mut device, FrameFeatures::all())
+            .unwrap());
+        frame.render(&mut device, &FrameParams::default()).unwrap();
+        assert_eq!(frame.zones().len(), FRAME_PASS_COUNT);
         frame.destroy(&mut device);
     }
 

@@ -31,12 +31,12 @@ pub use profile::{GpuProfiler, GpuZone};
 pub use render::{
     decode_f16, decode_rgba16f, decode_srgb_u8, decode_unorm_u8, encode_srgb_u8, oct_decode,
     psnr_bytes, psnr_channels, reference_bloom, reference_gbuffer, reference_lighting,
-    reference_ssao, reference_taa, reference_tonemap, AliasSlot, Camera, CompiledPass, FrameParams,
-    FrameStage, GbufferLayout, GpuFrame, GraphError, GraphImage, GraphImageKey, GraphPass,
-    InFlightBatch, Material, PassKind, ReferenceGbuffer, RenderGraph, RenderGraphPlan, RenderScene,
-    ResourceEntry, ResourceKey, ResourceRegistry, ResourceState, Tonemap, TransferSystem,
-    UploadJob, VramBudget, FRAME_PASS_COUNT, FRAME_PASS_NAMES, FRAME_PUSH_CONSTANT_BYTES,
-    FRAME_QUERY_COUNT,
+    reference_ssao, reference_taa, reference_tonemap, AliasSlot, Camera, CompiledPass,
+    FrameFeatures, FrameParams, FrameStage, GbufferLayout, GpuFrame, GraphError, GraphImage,
+    GraphImageKey, GraphPass, InFlightBatch, Material, PassKind, ReferenceGbuffer, RenderGraph,
+    RenderGraphPlan, RenderScene, ResourceEntry, ResourceKey, ResourceRegistry, ResourceState,
+    SettingsRuntime, Tonemap, TransferSystem, UploadJob, VramBudget, FRAME_PASS_COUNT,
+    FRAME_PASS_NAMES, FRAME_PUSH_CONSTANT_BYTES, FRAME_QUERY_COUNT,
 };
 #[cfg(feature = "vulkan")]
 pub use rhi::VulkanDevice;

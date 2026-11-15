@@ -196,13 +196,16 @@ impl GraphicsSettings {
     /// Что нужно перестроить при переходе к `next`.
     ///
     /// Device не входит в результат: смена пресета его не пересоздаёт.
+    /// `render_scale` меняет размер изображений кадра, поэтому входит в
+    /// `graph` (ADR-0044).
     #[must_use]
     pub fn diff(&self, next: &Self) -> SettingsChange {
         let swapchain = self.vsync != next.vsync || self.present_mode != next.present_mode;
         let graph = self.ssao != next.ssao
             || self.bloom != next.bloom
             || self.taa != next.taa
-            || self.shadow_resolution != next.shadow_resolution;
+            || self.shadow_resolution != next.shadow_resolution
+            || self.render_scale != next.render_scale;
         let pipelines = self.preset != next.preset;
         SettingsChange {
             swapchain,
@@ -454,6 +457,11 @@ mod tests {
         let high = GraphicsSettings::from_preset(QualityPreset::High);
         let change = base.diff(&high);
         assert!(!change.swapchain && change.graph && change.pipelines);
+
+        let mut scale = base.clone();
+        scale.render_scale = 0.5;
+        let change = base.diff(&scale);
+        assert!(!change.swapchain && change.graph && !change.pipelines);
     }
 
     #[test]

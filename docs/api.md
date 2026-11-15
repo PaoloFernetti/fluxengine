@@ -45,6 +45,7 @@
 | 4 | I9b | поверхности (`VkSurfaceKHR`) и present-swapchain (`VkSwapchainKHR`): `SurfaceTarget`/`WindowSurface`, headless WSI, `Swapchain::image_count` |
 | 4 | I9c | GPU-проходы кадра: push constants, `RenderGraph::execute_with`/`compile_with_initial`, `render::frame::GpuFrame` (G-buffer → SSAO → lighting → bloom → tonemap → TAA), CPU-эталоны и PSNR-гейт (ADR-0042) |
 | 4 | I9d | FrameStats по пассам: timestamp-пары в `GpuFrame` (`zones`, `pass_duration_ns`, `frame_duration_ns`), `FRAME_QUERY_COUNT`/`FRAME_PASS_NAMES` (ADR-0037 + ADR-0042) |
+| 4 | I9e | Рантайм-применение `GraphicsSettings`: `FrameFeatures`, `SettingsRuntime`, feature-aware граф кадра, `render_scale` в `graph` (ADR-0044) |
 | — | tool | `tools/flux-assetc unitypackage`: gzip/tar → дерево `Assets/`, meta рядом, защита от traversal, `--no-meta`/`--overwrite`/`--dry-run` (ADR-0043) |
 | — | release | `tools/flux-release`: Conventional Commits → semver, версия `Cargo.toml`, `CHANGELOG.md`, commit/annotated tag; pre-release, монорепо fixed/independent, opt-in publish/gh/semver-checks (ADR-0040) |
 
@@ -8769,21 +8770,46 @@ assert_eq!(push.len(), FRAME_PUSH_CONSTANT_BYTES as usize);
 `Rgba8Unorm`, depth `D32Float`, SSAO `Rgba16Float`, HDR/bloom/tonemap/
 `taa_a`/`taa_b` — `Rgba16Float`), sampler `Nearest`, шесть pipeline-ов
 (push constants 64 B, G-buffer — с depth `D32Float`) и пять наборов.
-История TAA очищается в ноль, поэтому первый кадр валиден.
+История TAA очищается в ноль, поэтому первый кадр валиден. Эквивалентен
+`with_features(..., FrameFeatures::all())`.
+
+#### `FrameFeatures`
+
+Набор эффектов кадра `{ ssao, bloom, taa }` (ADR-0044): `all()`, `none()`,
+`from_settings(&GraphicsSettings)`, `pass_names()`, `pass_count()`.
+Отключённый эффект не добавляет проход; его изображение очищается нейтральным
+значением (AO = 1, bloom = 0), поэтому дескрипторные наборы и pipeline-ы не
+меняются. Без TAA тонемап пишет прямо в выходной образ.
+
+#### `GpuFrame::with_features(device, width, height, features) -> Result<Self, RhiError>`
+
+Создаёт кадр с заданным `FrameFeatures`; `new` — алиас для `all()`.
+
+#### `GpuFrame::features(&self) -> FrameFeatures` / `active_pass_count(&self) -> usize`
+
+Текущий набор эффектов и число активных проходов (3 без эффектов, 6 со всеми).
+
+#### `GpuFrame::set_features(&mut self, device, features) -> Result<bool, RhiError>`
+
+Переключает эффекты на живом кадре: отключённые изображения очищаются
+нейтрально, при смене TAA история сбрасывается. `true` — граф изменится при
+следующем `render`; Device и pipeline-ы не пересоздаются.
 
 #### `GpuFrame::render(&mut self, device, params) -> Result<(), RhiError>`
 
-Кадр целиком: `frame.gbuffer` → `frame.ssao` → `frame.lighting` →
-`frame.bloom` → `frame.tonemap` → `frame.taa`. План компилируется с
-фактическими состояниями (`compile_with_initial`), после submit
-`history`/`output` меняются местами (ping-pong), а набор TAA переписывается
-на новый выход. Требует `wait_idle` до возврата.
+Кадр по активным проходам: `frame.gbuffer` → `frame.ssao`? →
+`frame.lighting` → `frame.bloom`? → `frame.tonemap` → `frame.taa`?
+(вопрос — проход включён соответствующим `FrameFeatures`). План
+компилируется с фактическими состояниями (`compile_with_initial`), после
+submit `history`/`output` меняются местами (ping-pong, только при TAA), а
+набор TAA переписывается на новый выход. Требует `wait_idle` до возврата.
 
 #### `GpuFrame::stage(&self, stage) -> (ImageId, ImageState, u32)`
 
 Изображение, его текущее состояние и байт на пиксель для `FrameStage`:
 `Albedo` (RT0, 4), `Normal` (RT1, 8), `Orm` (RT2, 4), `Depth` (4),
-`Ssao`/`Hdr`/`Bloom`/`Tonemap` (8), `Taa` — последний записанный выход (8).
+`Ssao`/`Hdr`/`Bloom`/`Tonemap` (8; без TAA `Tonemap` — выходной образ),
+`Taa` — последний записанный выход (8).
 
 #### `GpuFrame::readback(&mut self, device, stage) -> Result<Vec<u8>, RhiError>`
 
@@ -8798,11 +8824,12 @@ assert_eq!(push.len(), FRAME_PUSH_CONSTANT_BYTES as usize);
 
 #### FrameStats по пассам
 
-`GpuFrame` пишет timestamp-пары вокруг каждого прохода в собственный
+`GpuFrame` пишет timestamp-пары вокруг каждого активного прохода в собственный
 `QueryPoolDesc` (`FRAME_QUERY_COUNT = 12` = 2 × `FRAME_PASS_COUNT`),
-сбрасывает пул в начале кадра и читает после `wait_idle`. Порядок имён
+сбрасывает пул в начале кадра и читает после `wait_idle`. Полный порядок имён
 фиксирован: `FRAME_PASS_NAMES = ["frame.gbuffer", "frame.ssao",
-"frame.lighting", "frame.bloom", "frame.tonemap", "frame.taa"]`.
+"frame.lighting", "frame.bloom", "frame.tonemap", "frame.taa"]`; `zones()`
+содержит только проходы из `FrameFeatures::pass_names()`.
 Null-бэкенд отдаёт детерминированные значения (`index * 1000` нс), Vulkan —
 реальные GPU-таймстемпы.
 
@@ -9010,9 +9037,32 @@ assert_eq!(settings.shadow_resolution, 2048);
 
 #### `SettingsChange`
 
-`swapchain` (vsync/режим представления), `graph` (SSAO/bloom/TAA/тени),
-`pipelines` (пресет → набор keywords). `none()`, `any()`.
+`swapchain` (vsync/режим представления), `graph` (SSAO/bloom/TAA/render scale/
+тени), `pipelines` (пресет → набор keywords). `none()`, `any()`.
 Device не входит в структуру намеренно.
+
+#### `SettingsRuntime` (ADR-0044)
+
+`new(device, SwapchainDesc, GraphicsSettings)`, `settings()`, `swapchain()`,
+`swapchain_id()`, `frame()`/`frame_mut()`, `permutation_generation()`,
+`apply(device, next) -> Result<SettingsChange, RhiError>`,
+`resize(device, width, height)`, `destroy(self, device)`.
+
+`apply` перестраивает только затронутые подсистемы (create-then-swap):
+`vsync`/`present_mode` → swapchain; `ssao`/`bloom`/`taa`/`render_scale` →
+`FrameFeatures` и граф; `preset` → `permutation_generation`;
+`shadow_resolution` зарезервирован до прохода теней. Device не пересоздаётся;
+при ошибке RHI прежние настройки и ресурсы остаются в силе.
+
+```rust
+let desc = SwapchainDesc::new("main", 1280, 720);
+let mut runtime = SettingsRuntime::new(&mut device, desc, GraphicsSettings::default())?;
+let high = GraphicsSettings::from_preset(QualityPreset::High);
+let change = runtime.apply(&mut device, high)?;
+assert!(change.graph && change.pipelines && !change.swapchain);
+assert!(runtime.frame().features().taa);
+runtime.destroy(&mut device);
+```
 
 #### `GraphicsFeatureRegistry`
 
@@ -10347,6 +10397,13 @@ https и ssh remote.
   `FRAME_PASS_NAMES` фиксирует порядок. Null — детерминированные значения,
   Vulkan — реальные GPU-таймстемпы; `tests/vulkan_frame.rs` и Null-тест
   проверяют состав зон.
+- **I9e (этап 4, ADR-0044)**: рантайм-применение `GraphicsSettings` —
+  `FrameFeatures` (`from_settings`, `pass_names`, `pass_count`),
+  `GpuFrame::with_features`/`set_features`/`features`/`active_pass_count`
+  (отключённые эффекты чистятся нейтрально, зоны — только активные проходы);
+  `SettingsRuntime` (`new`, `apply`, `resize`, `destroy`, `swapchain_id`,
+  `permutation_generation`) пересоздаёт только затронутые подсистемы,
+  Device остаётся жив; `render_scale` входит в `SettingsChange::graph`.
 - **flux-assetc unitypackage (ADR-0043)**: `ExtractOptions`
   (`output`/`keep_meta`/`overwrite`/`dry_run`), `ExtractReport`
   (`assets`/`folders`/`skipped`/`bytes`/`paths`) и
