@@ -136,12 +136,17 @@ gh api -X PUT "repos/PaoloFernetti/fluxengine/branches/dev/protection" \
    Тогда push идёт от пользователя-админа, а не от `github-actions[bot]`.
    PAT-push может запускать workflow повторно; от повторного релиза защищает
    условие job-а по сообщению `chore(release):`.
-   **Важно:** PAT привязан к аккаунту. Если `origin` указывает на форк
-   другого аккаунта, push от имени исходного пользователя получает
-   `403 Permission ... denied` (именно это случилось при переезде на
-   `Kenift/fluxengine`). Поэтому по умолчанию workflow использует встроенный
-   `github.token` и `permissions: contents/issues/pull-requests: write` —
-   схему 1 без PAT.
+   **Важно:** PAT привязан к аккаунту-владельцу. Если `origin` указывает на
+   форк другого аккаунта, push от имени исходного пользователя получает
+   `403 Permission ... denied` (проверено при переезде на
+   `Kenift/fluxengine`); после возврата репозитория владельцу PAT снова
+   действует. Дополнительно `github.token` **не может пушить теги**:
+   `git push origin vX.Y.Z` отклоняется (`remote rejected ... failed`), хотя
+   push ветки `dev` тем же токеном проходит. Поэтому job `release` берёт
+   `secrets.RELEASE_TOKEN || github.token` и для `GH_TOKEN`, и для
+   `actions/checkout`; `sync-master` по-прежнему пушит `master` встроенным
+   токеном. При отсутствии секрета (форк) остаётся `github.token` — релиз
+   тогда требует ручного тега.
 3. **Rulesets + GitHub App.** Создать GitHub App с `Contents: write`,
    установить на репозиторий, добавить его в bypass-список ruleset для
    `master` и выпускать installation token через

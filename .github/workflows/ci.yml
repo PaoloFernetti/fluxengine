@@ -243,14 +243,15 @@ jobs:
     permissions:
       contents: write
     env:
-      # Встроенный токен workflow: не зависит от PAT другого аккаунта
-      # (RELEASE_TOKEN от PaoloFernetti не имеет прав на форк/репозиторий Kenift).
-      GH_TOKEN: ${{ github.token }}
+      # Push тега `github.token` отклоняет (`remote rejected ... failed`),
+      # поэтому релиз идёт PAT владельца; fallback — встроенный токен
+      # (форки без секрета не ломаются).
+      GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ github.token }}
+          token: ${{ secrets.RELEASE_TOKEN || github.token }}
 
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
