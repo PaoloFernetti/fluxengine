@@ -4,6 +4,14 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.17.1] - 2026-11-15
+
+### Fixes
+
+#### graphics
+
+- эталон UI-stub без frame.ui в Vulkan-тесте ([b37b324](https://github.com/PaoloFernetti/fluxengine/commit/b37b32447f9885e34998db1c1ea1edc03f92c57b))
+
 ## [0.17.0] - 2026-11-15
 
 ### Features
