@@ -5,6 +5,32 @@
 `tools/dxc/dxc.exe`, `LICENSE.TXT` и `ThirdPartyNotices.txt` в локальный или
 корневой ignore; файлы кладутся из официального источника.
 
+## Быстрая установка (локально и в CI)
+
+Версия закреплена в [`fetch.mjs`](fetch.mjs) (`v1.9.2609`), архивы проверяются
+по SHA-256; повторный запуск идемпотентен:
+
+```text
+node tools/dxc/fetch.mjs          # скачать, если ещё нет, и проверить dxc --version
+node tools/dxc/fetch.mjs --force  # перекачать
+```
+
+- Windows: `tools/dxc/bin/{dxc.exe,dxcompiler.dll,dxil.dll,dxv.exe}`.
+- Linux: `tools/dxc/bin/dxc-real`, `libdxcompiler.so`, `libdxil.so` и
+  генерируемая обёртка `bin/dxc` с `LD_LIBRARY_PATH`.
+- Лицензии поставки (`LICENSE-*.txt`, `LICENCE-*.txt`, `ThirdPartyNotices*.txt`)
+  копируются в `tools/dxc/bin/licenses/` (весь `bin/` в ignore).
+
+CI-шаг перед компиляцией шейдеров:
+
+```yaml
+- name: DXC
+  run: node tools/dxc/fetch.mjs
+```
+
+Без DXC `flux-assetc shader` возвращает типизированную ошибку, поэтому
+остальные шаги остаются зелёными.
+
 ## Лицензия и распространение
 
 - DXC распространяется под **LLVM Release License** (University of
@@ -33,7 +59,7 @@
 
 ```text
 tools/dxc/bin/dxc.exe        # Windows
-tools/dxc/bin/dxc            # Linux
+tools/dxc/bin/dxc            # Linux (обёртка fetch.mjs или бинарник)
 tools/dxc/dxc.exe            # плоская раскладка
 ```
 

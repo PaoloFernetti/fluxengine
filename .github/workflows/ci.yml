@@ -52,6 +52,15 @@ jobs:
       - name: shader artifacts + PSO smoke (Vulkan if available)
         run: cargo test -p flux-graphics --features vulkan --test vulkan_pso
 
+      - name: fetch DXC (pinned, SHA-256)
+        run: node tools/dxc/fetch.mjs
+
+      - name: compile shaders with DXC (smoke)
+        run: |
+          cargo run -p flux-assetc -- shader --check
+          cargo run -p flux-assetc -- shader crates/flux-graphics/shaders/fullscreen.vert.hlsl --out "$env:RUNNER_TEMP\fullscreen.vert.spv" --entry vs_main --stage vs_6_0
+          cargo run -p flux-assetc -- shader crates/flux-graphics/shaders/frame_gbuffer.frag.hlsl --out "$env:RUNNER_TEMP\frame_gbuffer.frag.spv" --entry fs_main --stage ps_6_0
+
       - name: workspace members match the canon list
         run: node tools/ci/check-workspace-members.mjs
 
