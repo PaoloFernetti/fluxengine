@@ -53,6 +53,10 @@ jobs:
         run: cargo test -p flux-graphics --features vulkan --test vulkan_pso
 
       - name: fetch DXC (latest, SHA-256)
+        env:
+          # Встроенный токен Actions: поднимает лимит GitHub API
+          # (анонимно — 60 запросов/час на общий IP раннера).
+          GITHUB_TOKEN: ${{ github.token }}
         run: node tools/dxc/fetch.mjs
 
       - name: compile shaders with DXC (smoke)
