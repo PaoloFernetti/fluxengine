@@ -12,7 +12,7 @@
 use flux_graphics::{
     decode_rgba16f, encode_srgb_u8, oct_decode, psnr_bytes, psnr_channels, reference_bloom,
     reference_gbuffer, reference_lighting, reference_ssao, reference_taa, reference_tonemap,
-    FrameParams, FrameStage, GpuFrame, RhiDevice, VulkanDevice,
+    FrameParams, FrameStage, GpuFrame, RhiDevice, VulkanDevice, FRAME_PASS_COUNT, FRAME_PASS_NAMES,
 };
 use flux_math::Vec3;
 
@@ -84,6 +84,16 @@ fn gpu_frame_passes_match_cpu_reference() {
     let mut frame = GpuFrame::new(&mut device, SIZE, SIZE).unwrap();
 
     frame.render(&mut device, &params).unwrap();
+
+    // FrameStats по пассам: ровно один timestamp-диапазон на проход.
+    let zones = frame.zones();
+    assert_eq!(zones.len(), FRAME_PASS_COUNT);
+    for (zone, name) in zones.iter().zip(FRAME_PASS_NAMES) {
+        assert_eq!(zone.name, name);
+        assert!(zone.end_ns >= zone.start_ns, "{name} end < start");
+    }
+    assert!(frame.frame_duration_ns() >= frame.pass_duration_ns("frame.gbuffer"));
+
     let albedo_bytes = frame.readback(&mut device, FrameStage::Albedo).unwrap();
     let normal_bytes = frame.readback(&mut device, FrameStage::Normal).unwrap();
     let orm_bytes = frame.readback(&mut device, FrameStage::Orm).unwrap();

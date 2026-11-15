@@ -35,7 +35,8 @@ pub use render::{
     FrameStage, GbufferLayout, GpuFrame, GraphError, GraphImage, GraphImageKey, GraphPass,
     InFlightBatch, Material, PassKind, ReferenceGbuffer, RenderGraph, RenderGraphPlan, RenderScene,
     ResourceEntry, ResourceKey, ResourceRegistry, ResourceState, Tonemap, TransferSystem,
-    UploadJob, VramBudget, FRAME_PUSH_CONSTANT_BYTES,
+    UploadJob, VramBudget, FRAME_PASS_COUNT, FRAME_PASS_NAMES, FRAME_PUSH_CONSTANT_BYTES,
+    FRAME_QUERY_COUNT,
 };
 #[cfg(feature = "vulkan")]
 pub use rhi::VulkanDevice;

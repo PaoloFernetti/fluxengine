@@ -112,6 +112,11 @@ flux-graphics = { workspace = true, features = ["vulkan"] }
   предыдущего прохода; 8-битные цели сравниваются байтами, fp16 —
   декодированными значениями. `tests/vulkan_frame.rs`: все стадии ≥ 60 дБ,
   второй кадр TAA с историей, чистый validation, `live_resources() == 0`.
+- FrameStats по пассам (ADR-0037 + ADR-0042): `GpuFrame` держит
+  timestamp-пул (`FRAME_QUERY_COUNT = 12`), пишет пары вокруг каждого из
+  шести проходов и отдаёт `zones()`, `pass_duration_ns()`,
+  `frame_duration_ns()`; порядок имён — `FRAME_PASS_NAMES`. Null-тест
+  проверяет состав и порядок зон без GPU.
 
 ## Проверки
 

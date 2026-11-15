@@ -44,6 +44,7 @@
 | 4 | I9 | RHI для GPU-проходов: дескрипторные наборы (`BindingKind`, `DescriptorSetDesc`, `DescriptorWrite`), `bind_descriptor_set`, `copy_buffer_to_image`/`copy_image_to_buffer`, `write_buffer`/`read_buffer` (ADR-0039) |
 | 4 | I9b | поверхности (`VkSurfaceKHR`) и present-swapchain (`VkSwapchainKHR`): `SurfaceTarget`/`WindowSurface`, headless WSI, `Swapchain::image_count` |
 | 4 | I9c | GPU-проходы кадра: push constants, `RenderGraph::execute_with`/`compile_with_initial`, `render::frame::GpuFrame` (G-buffer → SSAO → lighting → bloom → tonemap → TAA), CPU-эталоны и PSNR-гейт (ADR-0042) |
+| 4 | I9d | FrameStats по пассам: timestamp-пары в `GpuFrame` (`zones`, `pass_duration_ns`, `frame_duration_ns`), `FRAME_QUERY_COUNT`/`FRAME_PASS_NAMES` (ADR-0037 + ADR-0042) |
 | — | release | `tools/flux-release`: Conventional Commits → semver, версия `Cargo.toml`, `CHANGELOG.md`, commit/annotated tag; pre-release, монорепо fixed/independent, opt-in publish/gh/semver-checks (ADR-0040) |
 
 ## Общие конвенции
@@ -6373,8 +6374,9 @@ use flux_graphics::{
     ShaderCompiler, ShaderDeclaration, ShaderError, ShaderLibrary, ShaderStage, SurfaceId,
     SurfaceKind, SurfaceTarget, Swapchain, SwapchainDesc, SwapchainId, TextureFormat, TextureUsage,
     Tonemap, TransferSystem, UploadJob, VertexInput, VramAllocator, VramBudget, VramLease,
-    WindowSurface, FRAME_PUSH_CONSTANT_BYTES, MAX_KEYWORDS, MAX_MATERIAL_KEYWORDS, MAX_RENDER_SCALE,
-    MAX_SHADOW_RESOLUTION, MIN_RENDER_SCALE, MIN_SHADOW_RESOLUTION, VERTEX_FORMAT_V1,
+    WindowSurface, FRAME_PASS_COUNT, FRAME_PASS_NAMES, FRAME_PUSH_CONSTANT_BYTES, FRAME_QUERY_COUNT,
+    MAX_KEYWORDS, MAX_MATERIAL_KEYWORDS, MAX_RENDER_SCALE, MAX_SHADOW_RESOLUTION, MIN_RENDER_SCALE,
+    MIN_SHADOW_RESOLUTION, VERTEX_FORMAT_V1,
 };
 ```
 
@@ -8790,7 +8792,35 @@ assert_eq!(push.len(), FRAME_PUSH_CONSTANT_BYTES as usize);
 
 #### `GpuFrame::destroy(self, device)`
 
-Освобождает pipeline-ы, наборы, sampler и все десять изображений.
+Освобождает pipeline-ы, наборы, sampler, timestamp-пул и все десять
+изображений.
+
+#### FrameStats по пассам
+
+`GpuFrame` пишет timestamp-пары вокруг каждого прохода в собственный
+`QueryPoolDesc` (`FRAME_QUERY_COUNT = 12` = 2 × `FRAME_PASS_COUNT`),
+сбрасывает пул в начале кадра и читает после `wait_idle`. Порядок имён
+фиксирован: `FRAME_PASS_NAMES = ["frame.gbuffer", "frame.ssao",
+"frame.lighting", "frame.bloom", "frame.tonemap", "frame.taa"]`.
+Null-бэкенд отдаёт детерминированные значения (`index * 1000` нс), Vulkan —
+реальные GPU-таймстемпы.
+
+- `GpuFrame::zones(&self) -> &[GpuZone]` — зоны последнего кадра в порядке
+  `FRAME_PASS_NAMES`; пусто до первого `render`.
+- `GpuFrame::pass_duration_ns(&self, name) -> u64` — длительность прохода
+  (0, если прохода нет).
+- `GpuFrame::frame_duration_ns(&self) -> u64` — `end` последнего прохода
+  минус `start` первого (включает промежутки между проходами); 0 до кадра.
+
+```rust
+let mut device = NullDevice::new();
+let mut frame = GpuFrame::new(&mut device, 8, 8).unwrap();
+frame.render(&mut device, &FrameParams::default()).unwrap();
+assert_eq!(frame.zones().len(), FRAME_PASS_COUNT);
+assert_eq!(frame.zones()[0].name, FRAME_PASS_NAMES[0]);
+assert!(frame.frame_duration_ns() >= frame.pass_duration_ns("frame.gbuffer"));
+frame.destroy(&mut device);
+```
 
 #### CPU-эталоны
 
@@ -10309,6 +10339,13 @@ https и ssh remote.
   TAA, ping-pong истории, `FrameParams`/`FrameStage`, `readback`/`destroy`;
   CPU-эталоны `reference_*`, декодеры, `psnr_*`; `tests/vulkan_frame.rs` —
   все стадии ≥ 60 дБ, второй кадр TAA, чистый validation.
+- **I9d (этап 4, ADR-0037 + ADR-0042)**: FrameStats по пассам —
+  `GpuFrame` создаёт timestamp-пул (`FRAME_QUERY_COUNT = 12`), сбрасывает
+  его в начале кадра, пишет пары вокруг каждого из шести проходов и после
+  `wait_idle` отдаёт `zones()`, `pass_duration_ns()`, `frame_duration_ns()`;
+  `FRAME_PASS_NAMES` фиксирует порядок. Null — детерминированные значения,
+  Vulkan — реальные GPU-таймстемпы; `tests/vulkan_frame.rs` и Null-тест
+  проверяют состав зон.
 - **Инструменты (ADR-0040)**: `tools/flux-release` — CLI `release`/`version`/
   `changelog`/`check`/`init`/`doctor`; `Options`, `ReleaseConfig`
   (fixed/independent, en/ru, `commit_types`, skip-маркеры, внешний шаблон),

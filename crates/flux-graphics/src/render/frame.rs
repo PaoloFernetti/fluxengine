@@ -18,11 +18,13 @@ use std::collections::BTreeMap;
 
 use flux_math::Vec3;
 
+use crate::profile::GpuZone;
+
 use super::super::rhi::{
     BarrierBatch, BindingKind, BufferUsage, CommandBuffer, DescriptorBinding, DescriptorSetDesc,
     DescriptorSetId, DescriptorWrite, FilterMode, GpuBufferDesc, GpuImageDesc, ImageId, ImageState,
-    PipelineDesc, PipelineId, RenderPassDesc, RhiDevice, RhiError, SamplerDesc, SamplerId,
-    TextureFormat, TextureUsage,
+    PipelineDesc, PipelineId, QueryPoolDesc, QueryPoolId, RenderPassDesc, RhiDevice, RhiError,
+    SamplerDesc, SamplerId, TextureFormat, TextureUsage,
 };
 use super::gbuffer::{GbufferLayout, COLOR_ATTACHMENTS};
 use super::graph::{GraphImage, GraphImageKey, GraphPass, PassKind, RenderGraph};
@@ -40,6 +42,30 @@ const TAA_FS: &[u8] = include_bytes!("../../shaders/compiled/frame_taa.frag.spv"
 
 /// Размер блока push constants кадра, байт (4 × float4).
 pub const FRAME_PUSH_CONSTANT_BYTES: u32 = 64;
+
+/// Число проходов кадра, для которых пишутся таймстемпы.
+pub const FRAME_PASS_COUNT: usize = 6;
+
+/// Число timestamp-запросов кадра: start/end на каждый проход.
+pub const FRAME_QUERY_COUNT: u32 = (FRAME_PASS_COUNT as u32) * 2;
+
+/// Имена проходов в порядке записи таймстемпов (ADR-0042).
+pub const FRAME_PASS_NAMES: [&str; FRAME_PASS_COUNT] = [
+    "frame.gbuffer",
+    "frame.ssao",
+    "frame.lighting",
+    "frame.bloom",
+    "frame.tonemap",
+    "frame.taa",
+];
+
+/// Индекс прохода в [`FRAME_PASS_NAMES`].
+fn pass_slot(name: &str) -> Option<u32> {
+    FRAME_PASS_NAMES
+        .iter()
+        .position(|candidate| *candidate == name)
+        .map(|index| index as u32)
+}
 
 /// Параметры кадра: солнце, экспозиция и веса пост-обработки.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -192,6 +218,10 @@ pub struct GpuFrame {
     sampler: SamplerId,
     pipelines: FramePipelines,
     sets: FrameSets,
+    /// Timestamp-пул: start/end на каждый проход.
+    query_pool: QueryPoolId,
+    /// Зоны последнего кадра (FrameStats по пассам).
+    zones: Vec<GpuZone>,
 }
 
 impl GpuFrame {
@@ -413,6 +443,9 @@ impl GpuFrame {
             ],
         )?;
 
+        let query_pool =
+            device.create_query_pool(&QueryPoolDesc::new("frame-passes", FRAME_QUERY_COUNT))?;
+
         Ok(Self {
             width,
             height,
@@ -444,6 +477,8 @@ impl GpuFrame {
                 tonemap: tonemap_set,
                 taa: taa_set,
             },
+            query_pool,
+            zones: Vec::new(),
         })
     }
 
@@ -451,6 +486,35 @@ impl GpuFrame {
     #[must_use]
     pub fn size(&self) -> (u32, u32) {
         (self.width, self.height)
+    }
+
+    /// Зоны последнего кадра в порядке [`FRAME_PASS_NAMES`] — FrameStats
+    /// по пассам. Пусто до первого [`Self::render`].
+    #[must_use]
+    pub fn zones(&self) -> &[GpuZone] {
+        &self.zones
+    }
+
+    /// Длительность прохода по имени, нс (0, если прохода нет).
+    #[must_use]
+    pub fn pass_duration_ns(&self, name: &str) -> u64 {
+        self.zones
+            .iter()
+            .filter(|zone| zone.name == name)
+            .map(|zone| zone.duration_ns())
+            .sum()
+    }
+
+    /// Длительность последнего кадра по таймстемпам, нс.
+    ///
+    /// Считается как `end` последнего прохода минус `start` первого, поэтому
+    /// включает промежутки между проходами; 0 до первого кадра.
+    #[must_use]
+    pub fn frame_duration_ns(&self) -> u64 {
+        match (self.zones.first(), self.zones.last()) {
+            (Some(first), Some(last)) => last.end_ns.saturating_sub(first.start_ns),
+            _ => 0,
+        }
     }
 
     /// Изображение и его состояние после [`Self::render`], а также байт на
@@ -501,67 +565,86 @@ impl GpuFrame {
 
         let mut commands = device.create_command_buffer()?;
         commands.begin()?;
+        let query_pool = self.query_pool;
+        commands.reset_query_pool(query_pool, 0, FRAME_QUERY_COUNT)?;
         let (rt0, rt1, rt2, depth) = (self.rt0, self.rt1, self.rt2, self.depth);
         let (ssao, hdr, bloom, tonemap) = (self.ssao, self.hdr, self.bloom, self.tonemap);
         let pipelines = &self.pipelines;
         let sets = &self.sets;
-        graph.execute_with(&plan, &mut *commands, |pass, commands| match pass.name {
-            "frame.gbuffer" => {
-                let desc = RenderPassDesc::new("frame-gbuffer")
-                    .with_color(rt0)
-                    .with_color(rt1)
-                    .with_color(rt2)
-                    .with_depth(depth)
-                    .with_clear([0.0, 0.0, 0.0, 1.0]);
-                draw(commands, pipelines.gbuffer, None, &push, &desc)
-            }
-            "frame.ssao" => {
-                let desc = RenderPassDesc::new("frame-ssao")
-                    .with_color(ssao)
-                    .with_clear([1.0, 1.0, 1.0, 1.0]);
-                draw(commands, pipelines.ssao, Some(sets.ssao), &push, &desc)
-            }
-            "frame.lighting" => {
-                let desc = RenderPassDesc::new("frame-lighting")
-                    .with_color(hdr)
-                    .with_clear([0.0, 0.0, 0.0, 1.0]);
-                draw(
-                    commands,
-                    pipelines.lighting,
-                    Some(sets.lighting),
-                    &push,
-                    &desc,
-                )
-            }
-            "frame.bloom" => {
-                let desc = RenderPassDesc::new("frame-bloom")
-                    .with_color(bloom)
-                    .with_clear([0.0, 0.0, 0.0, 1.0]);
-                draw(commands, pipelines.bloom, Some(sets.bloom), &push, &desc)
-            }
-            "frame.tonemap" => {
-                let desc = RenderPassDesc::new("frame-tonemap")
-                    .with_color(tonemap)
-                    .with_clear([0.0, 0.0, 0.0, 1.0]);
-                draw(
-                    commands,
-                    pipelines.tonemap,
-                    Some(sets.tonemap),
-                    &push,
-                    &desc,
-                )
-            }
-            "frame.taa" => {
-                let desc = RenderPassDesc::new("frame-taa")
-                    .with_color(output)
-                    .with_clear([0.0, 0.0, 0.0, 1.0]);
-                draw(commands, pipelines.taa, Some(sets.taa), &push, &desc)
-            }
-            other => Err(RhiError::validation(format!("unknown frame pass: {other}"))),
+        graph.execute_with(&plan, &mut *commands, |pass, commands| {
+            let slot = pass_slot(pass.name).ok_or_else(|| {
+                RhiError::validation(format!("unknown frame pass: {}", pass.name))
+            })?;
+            commands.write_timestamp(query_pool, slot * 2)?;
+            let result = match pass.name {
+                "frame.gbuffer" => {
+                    let desc = RenderPassDesc::new("frame-gbuffer")
+                        .with_color(rt0)
+                        .with_color(rt1)
+                        .with_color(rt2)
+                        .with_depth(depth)
+                        .with_clear([0.0, 0.0, 0.0, 1.0]);
+                    draw(commands, pipelines.gbuffer, None, &push, &desc)
+                }
+                "frame.ssao" => {
+                    let desc = RenderPassDesc::new("frame-ssao")
+                        .with_color(ssao)
+                        .with_clear([1.0, 1.0, 1.0, 1.0]);
+                    draw(commands, pipelines.ssao, Some(sets.ssao), &push, &desc)
+                }
+                "frame.lighting" => {
+                    let desc = RenderPassDesc::new("frame-lighting")
+                        .with_color(hdr)
+                        .with_clear([0.0, 0.0, 0.0, 1.0]);
+                    draw(
+                        commands,
+                        pipelines.lighting,
+                        Some(sets.lighting),
+                        &push,
+                        &desc,
+                    )
+                }
+                "frame.bloom" => {
+                    let desc = RenderPassDesc::new("frame-bloom")
+                        .with_color(bloom)
+                        .with_clear([0.0, 0.0, 0.0, 1.0]);
+                    draw(commands, pipelines.bloom, Some(sets.bloom), &push, &desc)
+                }
+                "frame.tonemap" => {
+                    let desc = RenderPassDesc::new("frame-tonemap")
+                        .with_color(tonemap)
+                        .with_clear([0.0, 0.0, 0.0, 1.0]);
+                    draw(
+                        commands,
+                        pipelines.tonemap,
+                        Some(sets.tonemap),
+                        &push,
+                        &desc,
+                    )
+                }
+                "frame.taa" => {
+                    let desc = RenderPassDesc::new("frame-taa")
+                        .with_color(output)
+                        .with_clear([0.0, 0.0, 0.0, 1.0]);
+                    draw(commands, pipelines.taa, Some(sets.taa), &push, &desc)
+                }
+                other => Err(RhiError::validation(format!("unknown frame pass: {other}"))),
+            };
+            commands.write_timestamp(query_pool, slot * 2 + 1)?;
+            result
         })?;
         commands.end()?;
         commands.finish()?;
         device.wait_idle()?;
+
+        let timestamps = device.read_query_pool(query_pool)?;
+        let mut zones = Vec::with_capacity(FRAME_PASS_COUNT);
+        for (index, name) in FRAME_PASS_NAMES.iter().enumerate() {
+            let start = timestamps.get(index * 2).copied().unwrap_or(0);
+            let end = timestamps.get(index * 2 + 1).copied().unwrap_or(start);
+            zones.push(GpuZone::new(name, start, end));
+        }
+        self.zones = zones;
 
         // Ping-pong: следующий кадр читает только что записанный выход.
         self.history_is_a = !self.history_is_a;
@@ -638,7 +721,7 @@ impl GpuFrame {
         Ok(data)
     }
 
-    /// Освобождает изображения, pipeline-ы, sampler и наборы.
+    /// Освобождает изображения, pipeline-ы, sampler, наборы и пул запросов.
     pub fn destroy(self, device: &mut dyn RhiDevice) {
         for pipeline in [
             self.pipelines.gbuffer,
@@ -660,6 +743,7 @@ impl GpuFrame {
             let _ = device.destroy_descriptor_set(set);
         }
         let _ = device.destroy_sampler(self.sampler);
+        let _ = device.destroy_query_pool(self.query_pool);
         for image in [
             self.rt0,
             self.rt1,
@@ -1071,6 +1155,27 @@ mod tests {
         assert_eq!(bytes.len(), FRAME_PUSH_CONSTANT_BYTES as usize);
         let first = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
         assert!((first - 1.0 / 64.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn null_frame_records_zones_per_pass() {
+        use crate::rhi::NullDevice;
+
+        let mut device = NullDevice::new();
+        let mut frame = GpuFrame::new(&mut device, 8, 8).unwrap();
+        assert!(frame.zones().is_empty());
+        assert_eq!(frame.frame_duration_ns(), 0);
+
+        frame.render(&mut device, &FrameParams::default()).unwrap();
+        let zones = frame.zones();
+        assert_eq!(zones.len(), FRAME_PASS_COUNT);
+        for (zone, name) in zones.iter().zip(FRAME_PASS_NAMES) {
+            assert_eq!(zone.name, name);
+            assert!(zone.end_ns >= zone.start_ns);
+        }
+        assert!(frame.frame_duration_ns() >= frame.pass_duration_ns("frame.gbuffer"));
+        assert_eq!(frame.pass_duration_ns("missing"), 0);
+        frame.destroy(&mut device);
     }
 
     #[test]

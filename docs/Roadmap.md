@@ -682,13 +682,17 @@ PSNR каждой стадии против CPU-эталона ≥ 60 дБ; vali
       `read_buffer`, ADR-0039) — основа реальных golden-кадров
 - [x] Golden-политика: Null — bit-exact, GPU — допуск (per-pixel diff и доля
       выбросов); побитовое равенство между драйверами не требуется
-- [ ] FrameStats: фреймтайм по пассам (query pools в реальных проходах)
-- [ ] Запись зон из GPU-проходов G-buffer/lighting (проходы готовы, зоны
-      ещё не пишутся)
+- [x] FrameStats по пассам: `GpuFrame` пишет timestamp-пары вокруг каждого
+      прохода (`FRAME_QUERY_COUNT = 12`, имена `FRAME_PASS_NAMES`) и отдаёт
+      `zones()`, `pass_duration_ns()`, `frame_duration_ns()`; Null —
+      детерминированные значения, Vulkan — реальные GPU-таймстемпы
+- [x] Запись зон из GPU-проходов G-buffer/lighting: все шесть проходов
+      кадра попадают в `GpuZone` (ADR-0037 + ADR-0042)
 
 **Приёмка**: изменение пикселя без visual-change PR краснит гейт; дифф
-показывает тепловую карту. Харнесс, query pools, CPU-гейт G4 и readback
-готовы; GPU-зоны из реальных проходов — после GPU-проходов.
+показывает тепловую карту. `tests/vulkan_frame.rs` проверяет, что на каждый
+проход приходится одна зона с `end >= start`, а Null-тест — порядок имён и
+ненулевые длительности; харнесс, query pools, CPU-гейт G4 и readback готовы.
 
 ### Майлстоун M4
 

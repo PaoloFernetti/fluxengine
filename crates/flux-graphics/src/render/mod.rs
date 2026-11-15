@@ -22,7 +22,8 @@ pub use frame::{
     decode_f16, decode_rgba16f, decode_srgb_u8, decode_unorm_u8, encode_srgb_u8, oct_decode,
     psnr_bytes, psnr_channels, reference_bloom, reference_gbuffer, reference_lighting,
     reference_ssao, reference_taa, reference_tonemap, FrameParams, FrameStage, GpuFrame,
-    ReferenceGbuffer, FRAME_PUSH_CONSTANT_BYTES,
+    ReferenceGbuffer, FRAME_PASS_COUNT, FRAME_PASS_NAMES, FRAME_PUSH_CONSTANT_BYTES,
+    FRAME_QUERY_COUNT,
 };
 pub use gbuffer::GbufferLayout;
 pub use graph::{
