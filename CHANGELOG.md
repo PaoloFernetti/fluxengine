@@ -4,6 +4,14 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.14.0] - 2026-11-15
+
+### Features
+
+#### graphics
+
+- образы swapchain как ImageId (4.5, ADR-0045) ([daca1e0](https://github.com/PaoloFernetti/fluxengine/commit/daca1e097ebeeaff7c70ec4e37dace36b017a500))
+
 ## [0.13.0] - 2026-11-15
 
 ### Features
