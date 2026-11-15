@@ -76,7 +76,7 @@ flowchart LR
 - Каждый термин из ADR обязан иметь запись в глоссарии канона
   (правило «термин имеет владельца»).
 
-## Индекс (ADR-0001…0027 — архитектурная фаза; 0028…0030 — этап 2; 0031…0033 — этап 3; 0034…0050 — этап 4/инструменты)
+## Индекс (ADR-0001…0027 — архитектурная фаза; 0028…0030 — этап 2; 0031…0033 — этап 3; 0034…0051 — этап 4/инструменты)
 
 | ADR | Решение | Источник |
 |---|---|---|
@@ -130,6 +130,7 @@ flowchart LR
 | 0048 | UI-stub и present: `frame.ui` читает tonemap/TAA-выход и пишет в acquired-образ swapchain, `GpuFrame::render_to`/`present` | flux-graphics |
 | 0049 | Depth-only pipelines и состояние глубины: `DepthCompare`, `PipelineDesc::with_depth_state`, пустые color-форматы при depth-аттачменте (тени, скайбокс) | flux-graphics |
 | 0050 | Shadow map: camera-relative light space — `shadow_view_projection`, `frame.shadow` (depth-only, 512²), `FrameStage::Shadow`, vertex pulling с `[[vk::push_constant]]` | flux-graphics |
+| 0051 | Процедурное небо и аналитический IBL: `sky_zenith`/`sky_horizon`/`ibl_strength`, push constants 96 B, чтение глубины в lighting, camera-relative направления | flux-graphics |
 
 Дополнительные решения, зафиксированные в плане, но не требующие отдельных
 ADR-файлов (частично покрыты выше): input abstraction (flux-platform),
@@ -222,6 +223,10 @@ undo × PIE × стриминг (flux-editor), golden-сейвы, virtual textur
   UBO/дескрипторы, push constants до шейдера не доходят, и depth-only проход
   даёт пустую карту при чистом validation. Формулировка ADR-0035 не
   переписывается.
+- ADR-0051 расширяет блок push constants кадра ADR-0042 с 64 до 96 B
+  (6 × float4) ради `sky_zenith`/`sky_horizon`/`ibl_strength`; это в пределах
+  гарантированного Vulkan минимума 128 B. Шейдеры, которым хватает 64 B,
+  читают первые четыре `float4`. Формулировка ADR-0042 не переписывается.
 - Правило: индекс отражает актуальные числа/этапы; формулировки решений в
   ADR-файлах не переписываются, расхождение оформляется как уточнение здесь.
 

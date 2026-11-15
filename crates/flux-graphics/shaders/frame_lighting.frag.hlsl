@@ -1,4 +1,7 @@
-// Deferred lighting (ADR-0017/ADR-0042): G-buffer + SSAO -> HDR.
+// Deferred lighting (ADR-0017/ADR-0042): G-buffer + SSAO + depth -> HDR.
+//
+// Процедурное небо и аналитический IBL (ADR-0051): направления
+// camera-relative, cubemap-пробы не используются.
 //
 // Формулы GGX/Smith/Fresnel/multiscatter совпадают с `render::pbr`.
 
@@ -6,7 +9,9 @@ struct FrameConstants {
     float4 params0; // inv_size.x, inv_size.y, exposure, bloom_threshold
     float4 params1; // sun.xyz, bloom_intensity
     float4 params2; // radiance.xyz, taa_alpha
-    float4 params3; // ssao_radius, unused...
+    float4 params3; // ssao_radius, ibl_strength, unused, unused
+    float4 params4; // sky_zenith.xyz, unused
+    float4 params5; // sky_horizon.xyz, unused
 };
 
 [[vk::push_constant]] ConstantBuffer<FrameConstants> frame : register(b0);
@@ -15,7 +20,8 @@ struct FrameConstants {
 [[vk::binding(1, 0)]] Texture2D<float4> normal_tex : register(t1);
 [[vk::binding(2, 0)]] Texture2D<float4> orm_tex : register(t2);
 [[vk::binding(3, 0)]] Texture2D<float4> ao_tex : register(t3);
-[[vk::binding(4, 0)]] SamplerState samp : register(s0);
+[[vk::binding(4, 0)]] Texture2D<float> depth_tex : register(t4);
+[[vk::binding(5, 0)]] SamplerState samp : register(s0);
 
 static const float PI = 3.141592653589793;
 
@@ -51,8 +57,26 @@ float3 fresnel_schlick(float cos_theta, float3 f0) {
     return f0 + (1.0 - f0) * factor;
 }
 
+// Градиент неба: горизонт -> зенит по высоте camera-relative направления.
+float3 sky_color(float3 direction) {
+    float t = saturate(direction.y * 0.5 + 0.5);
+    return lerp(frame.params5.xyz, frame.params4.xyz, t);
+}
+
 float4 fs_main(VSOut input) : SV_Target {
     float2 uv = input.position.xy * frame.params0.xy;
+    float depth = depth_tex.SampleLevel(samp, uv, 0.0);
+
+    // Camera-relative направление взгляда: FOV 90°, Y вверх в NDC.
+    float2 ndc = float2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+    float aspect = frame.params0.y / frame.params0.x;
+    float3 view_dir = normalize(float3(ndc.x * aspect, ndc.y, -1.0));
+
+    if (depth <= 0.0) {
+        // Reversed-Z far: пиксель неба (ADR-0051).
+        return float4(sky_color(view_dir), 1.0);
+    }
+
     float4 albedo = albedo_tex.SampleLevel(samp, uv, 0.0);
     float4 normal_sample = normal_tex.SampleLevel(samp, uv, 0.0);
     float4 orm = orm_tex.SampleLevel(samp, uv, 0.0);
@@ -65,24 +89,31 @@ float4 fs_main(VSOut input) : SV_Target {
     float metallic = orm.b;
     float roughness = clamp(orm.g, 0.04, 1.0);
     float3 base_color = albedo.rgb;
+    float ibl = max(frame.params3.y, 0.0);
 
     float n_dot_l = max(dot(n, l), 0.0);
-    if (n_dot_l <= 0.0) {
-        return float4(0.0, 0.0, 0.0, 1.0);
-    }
     float n_dot_v = max(dot(n, v), 1e-4);
-    float3 h = normalize(v + l);
-    float n_dot_h = max(dot(n, h), 0.0);
-    float v_dot_h = max(dot(v, h), 0.0);
-
     float3 f0 = lerp(0.04, base_color, metallic);
-    float3 fresnel = fresnel_schlick(v_dot_h, f0);
-    float3 multiscatter = 1.0 + f0 * (1.0 / max(fresnel, 1e-4) - 1.0) * (1.0 - roughness);
-    float3 specular = distribution_ggx(n_dot_h, roughness)
-        * visibility_smith(n_dot_v, n_dot_l, roughness)
-        * fresnel
-        * multiscatter;
-    float3 diffuse = (1.0 - fresnel) * (1.0 - metallic) * base_color * (1.0 / PI);
-    float3 color = (diffuse + specular) * radiance * n_dot_l * ao;
+
+    float3 direct = float3(0.0, 0.0, 0.0);
+    if (n_dot_l > 0.0) {
+        float3 h = normalize(v + l);
+        float n_dot_h = max(dot(n, h), 0.0);
+        float v_dot_h = max(dot(v, h), 0.0);
+        float3 fresnel = fresnel_schlick(v_dot_h, f0);
+        float3 multiscatter = 1.0 + f0 * (1.0 / max(fresnel, 1e-4) - 1.0) * (1.0 - roughness);
+        float3 specular = distribution_ggx(n_dot_h, roughness)
+            * visibility_smith(n_dot_v, n_dot_l, roughness)
+            * fresnel
+            * multiscatter;
+        float3 diffuse = (1.0 - fresnel) * (1.0 - metallic) * base_color * (1.0 / PI);
+        direct = (diffuse + specular) * radiance * n_dot_l;
+    }
+
+    // Аналитический IBL (ADR-0051): диффузная irradiance по нормали и
+    // зеркальное отражение reflect(-v, n), без BRDF LUT.
+    float3 ambient_diffuse = sky_color(n) * base_color * (1.0 - metallic);
+    float3 ambient_specular = sky_color(reflect(-v, n)) * f0;
+    float3 color = direct * ao + (ambient_diffuse + ambient_specular) * ao * ibl;
     return float4(color, 1.0);
 }

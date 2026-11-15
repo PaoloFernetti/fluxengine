@@ -662,7 +662,9 @@ G-buffer → deferred lighting → UI-stub → present» работает на V
 - [x] Shadow map (ADR-0050): `frame.shadow` — depth-only, camera-relative
       light space (`shadow_view_projection`), `FrameStage::Shadow`;
       сдвиг камеры и инстанса на `1e6` не меняет карту
-- [ ] IBL и скайбокс (camera-relative направления)
+- [x] IBL и скайбокс (ADR-0051): процедурное небо по глубине в
+      `frame.lighting`, аналитический ambient от среды, camera-relative
+      направления; push constants 96 B
 
 **Приёмка**: ABI G-buffer и PBR/tonemap/post-формулы зафиксированы и покрыты
 тестами; Vulkan собирает PSO из SPIR-V; clearcoat добавляется keyword-ом без

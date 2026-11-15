@@ -29,7 +29,8 @@ use super::super::rhi::{
 };
 use super::gbuffer::{GbufferLayout, COLOR_ATTACHMENTS};
 use super::geometry::{
-    scene_push_constants, shadow_view_projection, SceneGeometry, SHADOW_LIGHT_DIR, SHADOW_MAP_SIZE,
+    scene_push_constants, shadow_view_projection, SceneGeometry, SCENE_PUSH_CONSTANT_BYTES,
+    SHADOW_LIGHT_DIR, SHADOW_MAP_SIZE,
 };
 use super::graph::{GraphImage, GraphImageKey, GraphPass, PassKind, RenderGraph};
 use super::pbr::{self, Material};
@@ -46,8 +47,11 @@ const TONEMAP_FS: &[u8] = include_bytes!("../../shaders/compiled/frame_tonemap.f
 const TAA_FS: &[u8] = include_bytes!("../../shaders/compiled/frame_taa.frag.spv");
 const UI_FS: &[u8] = include_bytes!("../../shaders/compiled/frame_ui.frag.spv");
 
-/// Размер блока push constants кадра, байт (4 × float4).
-pub const FRAME_PUSH_CONSTANT_BYTES: u32 = 64;
+/// Размер блока push constants кадра, байт (6 × float4, ADR-0051).
+///
+/// Расширен с 64 до 96 B ради параметров процедурного неба и IBL; минимум
+/// Vulkan для push constants — 128 B, поэтому запас есть.
+pub const FRAME_PUSH_CONSTANT_BYTES: u32 = 96;
 
 /// Число проходов кадра, для которых пишутся таймстемпы.
 pub const FRAME_PASS_COUNT: usize = 6;
@@ -144,7 +148,7 @@ impl FrameFeatures {
     }
 }
 
-/// Параметры кадра: солнце, экспозиция и веса пост-обработки.
+/// Параметры кадра: солнце, небо/IBL, экспозиция и веса пост-обработки.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FrameParams {
     /// Направление на солнце (нормализуется в шейдере и эталоне).
@@ -161,6 +165,12 @@ pub struct FrameParams {
     pub taa_alpha: f32,
     /// Радиус SSAO в единицах Reversed-Z.
     pub ssao_radius: f32,
+    /// Зенитный цвет процедурного неба (HDR, ADR-0051).
+    pub sky_zenith: [f32; 3],
+    /// Цвет горизонта процедурного неба (HDR, ADR-0051).
+    pub sky_horizon: [f32; 3],
+    /// Сила IBL-ambient (`0` отключает, ADR-0051).
+    pub ibl_strength: f32,
 }
 
 impl Default for FrameParams {
@@ -173,12 +183,15 @@ impl Default for FrameParams {
             bloom_intensity: 0.5,
             taa_alpha: 0.5,
             ssao_radius: 0.05,
+            sky_zenith: [0.05, 0.10, 0.20],
+            sky_horizon: [0.30, 0.35, 0.45],
+            ibl_strength: 1.0,
         }
     }
 }
 
 impl FrameParams {
-    /// Сериализует параметры в блок push constants (4 × float4).
+    /// Сериализует параметры в блок push constants (6 × float4, ADR-0051).
     #[must_use]
     pub fn push_constants(
         &self,
@@ -199,8 +212,16 @@ impl FrameParams {
             self.radiance[2],
             self.taa_alpha,
             self.ssao_radius,
+            self.ibl_strength,
             0.0,
             0.0,
+            self.sky_zenith[0],
+            self.sky_zenith[1],
+            self.sky_zenith[2],
+            0.0,
+            self.sky_horizon[0],
+            self.sky_horizon[1],
+            self.sky_horizon[2],
             0.0,
         ];
         let mut bytes = [0u8; FRAME_PUSH_CONSTANT_BYTES as usize];
@@ -241,12 +262,14 @@ const SSAO_BINDINGS: [DescriptorBinding; 2] = [
     DescriptorBinding::new(1, BindingKind::Sampler),
 ];
 
-const LIGHTING_BINDINGS: [DescriptorBinding; 5] = [
+/// G-buffer (0..3) + глубина для скайбокса (4) + sampler (5), ADR-0051.
+const LIGHTING_BINDINGS: [DescriptorBinding; 6] = [
     DescriptorBinding::new(0, BindingKind::SampledImage),
     DescriptorBinding::new(1, BindingKind::SampledImage),
     DescriptorBinding::new(2, BindingKind::SampledImage),
     DescriptorBinding::new(3, BindingKind::SampledImage),
-    DescriptorBinding::new(4, BindingKind::Sampler),
+    DescriptorBinding::new(4, BindingKind::SampledImage),
+    DescriptorBinding::new(5, BindingKind::Sampler),
 ];
 
 const SINGLE_BINDINGS: [DescriptorBinding; 2] = [
@@ -532,7 +555,8 @@ impl GpuFrame {
                 DescriptorWrite::image(1, 0, rt1),
                 DescriptorWrite::image(2, 0, rt2),
                 DescriptorWrite::image(3, 0, ssao),
-                DescriptorWrite::sampler(4, 0, sampler),
+                DescriptorWrite::image(4, 0, depth),
+                DescriptorWrite::sampler(5, 0, sampler),
             ],
         )?;
         let bloom_set = device.create_descriptor_set(
@@ -1251,13 +1275,14 @@ impl GpuFrame {
                 .read(key(self.depth))
                 .color(key(self.ssao)))?;
         }
-        // Lighting всегда читает AO и bloom-слот: отключённые эффекты
-        // очищены нейтральными значениями.
+        // Lighting всегда читает AO, глубину (скайбокс, ADR-0051) и
+        // bloom-слот: отключённые эффекты очищены нейтральными значениями.
         add(GraphPass::new("frame.lighting", PassKind::Graphics)
             .read(key(self.rt0))
             .read(key(self.rt1))
             .read(key(self.rt2))
             .read(key(self.ssao))
+            .read(key(self.depth))
             .color(key(self.hdr)))?;
         if self.features.bloom {
             add(GraphPass::new("frame.bloom", PassKind::Graphics)
@@ -1353,8 +1378,8 @@ struct SceneDraw {
     set: DescriptorSetId,
     vertices: u32,
     instances: u32,
-    push: [u8; FRAME_PUSH_CONSTANT_BYTES as usize],
-    shadow_push: [u8; FRAME_PUSH_CONSTANT_BYTES as usize],
+    push: [u8; SCENE_PUSH_CONSTANT_BYTES as usize],
+    shadow_push: [u8; SCENE_PUSH_CONSTANT_BYTES as usize],
 }
 
 /// Рисует инстансы сцены через vertex pulling (ADR-0047/0050).
@@ -1477,7 +1502,29 @@ pub fn reference_ssao(width: u32, height: u32, depth: &[f32], radius: f32) -> Ve
     result
 }
 
-/// CPU-эталон deferred lighting (GGX/Smith/Fresnel/multiscatter).
+/// Цвет процедурного неба по направлению (ADR-0051).
+fn sky_color(direction: Vec3, horizon: Vec3, zenith: Vec3) -> Vec3 {
+    let t = (direction.y * 0.5 + 0.5).clamp(0.0, 1.0);
+    horizon.lerp(zenith, t)
+}
+
+/// Camera-relative направление взгляда для пикселя (FOV 90°, ADR-0051).
+fn view_direction(width: u32, height: u32, index: usize) -> Vec3 {
+    let x = (index % width as usize) as f32 + 0.5;
+    let y = (index / width as usize) as f32 + 0.5;
+    let ndc_x = (x / width as f32) * 2.0 - 1.0;
+    let ndc_y = 1.0 - (y / height as f32) * 2.0;
+    let aspect = width as f32 / height.max(1) as f32;
+    Vec3::new(ndc_x * aspect, ndc_y, -1.0).normalize()
+}
+
+/// CPU-эталон deferred lighting (GGX/Smith/Fresnel/multiscatter) +
+/// процедурное небо/IBL (ADR-0051).
+///
+/// `depth[index] <= 0` (Reversed-Z far) — пиксель неба: цвет зависит только
+/// от camera-relative направления взгляда. Иначе — прямое освещение плюс
+/// аналитический ambient от процедурной среды.
+#[allow(clippy::too_many_arguments)] // входы — независимые readback-срезы
 #[must_use]
 pub fn reference_lighting(
     width: u32,
@@ -1486,14 +1533,26 @@ pub fn reference_lighting(
     normal_oct: &[f32],
     orm: &[u8],
     ao: &[f32],
+    depth: &[f32],
     params: &FrameParams,
 ) -> Vec<Vec3> {
     let view = Vec3::new(0.0, 0.0, 1.0);
     let light = Vec3::from_array(params.sun).normalize();
     let radiance = Vec3::from_array(params.radiance);
+    let zenith = Vec3::from_array(params.sky_zenith);
+    let horizon = Vec3::from_array(params.sky_horizon);
+    let ibl = params.ibl_strength.max(0.0);
     let count = (width as usize) * (height as usize);
     let mut result = Vec::with_capacity(count);
     for index in 0..count {
+        if depth.get(index).copied().unwrap_or(0.0) <= 0.0 {
+            result.push(sky_color(
+                view_direction(width, height, index),
+                horizon,
+                zenith,
+            ));
+            continue;
+        }
         let base = index * 4;
         let albedo = Vec3::new(
             decode_srgb_u8(albedo_srgb[base]),
@@ -1505,7 +1564,12 @@ pub fn reference_lighting(
         let metallic = decode_unorm_u8(orm[base + 2]);
         let ao = ao[index].clamp(0.0, 1.0);
         let material = Material::new(albedo, metallic, roughness);
-        result.push(pbr::evaluate_direct(material, normal, view, light, radiance) * ao);
+        let direct = pbr::evaluate_direct(material, normal, view, light, radiance) * ao;
+        let ambient_diffuse =
+            sky_color(normal, horizon, zenith) * albedo * (1.0 - metallic) * ao * ibl;
+        let reflected = (-view).reflect(normal);
+        let ambient_specular = sky_color(reflected, horizon, zenith) * material.f0() * ao * ibl;
+        result.push(direct + ambient_diffuse + ambient_specular);
     }
     result
 }
@@ -1682,12 +1746,46 @@ mod tests {
     use super::*;
 
     #[test]
-    fn push_constants_are_16_floats() {
+    fn push_constants_are_24_floats() {
         let params = FrameParams::default();
         let bytes = params.push_constants(64, 32);
         assert_eq!(bytes.len(), FRAME_PUSH_CONSTANT_BYTES as usize);
-        let first = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-        assert!((first - 1.0 / 64.0).abs() < 1e-6);
+        assert_eq!(bytes.len(), 96);
+        let float = |index: usize| {
+            let offset = index * 4;
+            f32::from_le_bytes([
+                bytes[offset],
+                bytes[offset + 1],
+                bytes[offset + 2],
+                bytes[offset + 3],
+            ])
+        };
+        assert!((float(0) - 1.0 / 64.0).abs() < 1e-6);
+        // params3.y — сила IBL; params4.xyz — зенит (ADR-0051).
+        assert!((float(13) - params.ibl_strength).abs() < 1e-6);
+        assert!((float(16) - params.sky_zenith[0]).abs() < 1e-6);
+        assert!((float(20) - params.sky_horizon[0]).abs() < 1e-6);
+    }
+
+    #[test]
+    fn reference_sky_is_independent_of_surface_inputs() {
+        let width = 4;
+        let height = 4;
+        let count = (width * height) as usize;
+        let params = FrameParams::default();
+        let depth = vec![0.0f32; count];
+        let ao = vec![1.0f32; count];
+        let normals = vec![0.0f32; count * 2];
+        let zero = vec![0u8; count * 4];
+        let sky = reference_lighting(width, height, &zero, &normals, &zero, &ao, &depth, &params);
+        let mut bright = zero.clone();
+        bright.fill(255);
+        let other = reference_lighting(
+            width, height, &bright, &normals, &zero, &ao, &depth, &params,
+        );
+        assert_eq!(sky, other, "sky не зависит от G-buffer");
+        assert!(sky.iter().all(|color| color.length() > 0.0));
+        assert_ne!(sky[0], sky[count - width as usize], "верх ≠ низ экрана");
     }
 
     #[test]

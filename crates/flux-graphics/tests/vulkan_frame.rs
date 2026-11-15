@@ -164,6 +164,7 @@ fn gpu_frame_passes_match_cpu_reference() {
         &normal_oct,
         &orm_bytes,
         &ssao,
+        &depth,
         &params,
     );
     let hdr = decode_vectors(&hdr_bytes, count);
@@ -392,6 +393,59 @@ fn shadow_map_records_camera_relative_depth() {
     assert_eq!(
         far_shadow, shadow,
         "camera-relative: карта теней не зависит от мировых координат"
+    );
+
+    device.wait_idle().unwrap();
+    assert_eq!(
+        device.validation_errors(),
+        before,
+        "validation log is dirty"
+    );
+    geometry.destroy(&mut device);
+    frame.destroy(&mut device);
+    device.wait_idle().unwrap();
+    assert_eq!(device.live_resources(), 0);
+}
+
+#[test]
+fn empty_scene_renders_procedural_sky() {
+    let Some(mut device) = runtime_device() else {
+        return;
+    };
+    let before = device.validation_errors();
+    let count = (SIZE * SIZE) as usize;
+    let params = FrameParams::default();
+    let camera = Camera {
+        aspect: 1.0,
+        ..Camera::default()
+    };
+    // Пустая сцена: G-buffer и shadow pass не рисуют инстансы, глубина
+    // остаётся clear 0.0 — lighting обязан отдать процедурное небо (ADR-0051).
+    let mut scene = RenderScene::new();
+    scene.set_camera_position(camera.position);
+    scene.interpolate(1.0);
+    let mut geometry = SceneGeometry::new(&mut device, 1).unwrap();
+    geometry.upload(&mut device, &scene).unwrap();
+    assert_eq!(geometry.instance_count(), 0, "пустая сцена без инстансов");
+
+    let mut frame =
+        GpuFrame::with_features(&mut device, SIZE, SIZE, FrameFeatures::none()).unwrap();
+    frame
+        .render_scene(&mut device, &params, &geometry, &camera)
+        .unwrap();
+
+    let hdr_bytes = frame.readback(&mut device, FrameStage::Hdr).unwrap();
+    let hdr = decode_vectors(&hdr_bytes, count);
+    let zeros = vec![0u8; count * 4];
+    let normals = vec![0.0f32; count * 2];
+    let ao = vec![1.0f32; count];
+    let far = vec![0.0f32; count];
+    let reference = reference_lighting(SIZE, SIZE, &zeros, &normals, &zeros, &ao, &far, &params);
+    let psnr = psnr_vectors(&reference, &hdr, peak_of(&reference));
+    assert!(psnr >= PSNR_MIN, "sky psnr={psnr:.2} dB");
+    assert!(
+        hdr.iter().all(|color| color.length() > 0.0),
+        "процедурное небо не должно быть чёрным"
     );
 
     device.wait_idle().unwrap();

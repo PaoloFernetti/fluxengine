@@ -148,6 +148,14 @@ flux-graphics = { workspace = true, features = ["vulkan"] }
   матрица не доходит. Vulkan-тест `shadow_map_records_camera_relative_depth`:
   карта не пуста, сдвиг камеры и инстанса на `1e6` даёт ту же карту,
   validation чистый.
+- Небо и IBL (4.6, ADR-0051): `frame.lighting` читает глубину; при
+  `depth <= 0` отдаёт процедурное небо по camera-relative направлению
+  (FOV 90°), иначе — прямое освещение плюс аналитический ambient
+  (`sky_color(n)` и `reflect(-v, n)`) с силой `ibl_strength`. Параметры
+  неба — `FrameParams::sky_zenith`/`sky_horizon`; push constants кадра
+  расширены до 96 B (6 × float4). Vulkan-тест
+  `empty_scene_renders_procedural_sky`: пустая сцена даёт небо,
+  PSNR ≥ 60 дБ; Null-тест проверяет независимость неба от G-buffer.
 - Extract (4.5): `render::cull` отсекает инстансы по camera-relative AABB
   (`cull_instances`, `CullStats`), `RenderScene::extract(alpha, frustum)`
   совмещает интерполяцию и culling, отдаёт `visible_indices()` и

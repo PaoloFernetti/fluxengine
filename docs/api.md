@@ -52,6 +52,7 @@
 | 4 | I9h | GPU-геометрия сцены: `SceneGeometry` (vertex pulling `SV_VertexID`/`SV_InstanceID`), `GpuFrame::render_scene`, unit-куб и инстансы в storage-буферах (ADR-0047) |
 | 4 | I9i | UI-stub и present: проход `frame.ui` читает tonemap/TAA-выход и пишет в acquired-образ swapchain, `GpuFrame::render_to`/`present` (ADR-0048) |
 | 4 | I9j | Shadow map: `frame.shadow` (depth-only, camera-relative light space), `SceneGeometry::shadow_pipeline`, `shadow_view_projection`, `SHADOW_MAP_SIZE`/`SHADOW_LIGHT_DIR`/`SHADOW_EXTENT`, `FrameStage::Shadow` (ADR-0050) |
+| 4 | I9k | Процедурное небо и IBL: `FrameParams::sky_zenith`/`sky_horizon`/`ibl_strength`, lighting читает глубину, push constants 96 B, camera-relative направления (ADR-0051) |
 | — | tool | `tools/flux-assetc unitypackage`: gzip/tar → дерево `Assets/`, meta рядом, защита от traversal, `--no-meta`/`--overwrite`/`--dry-run` (ADR-0043) |
 | — | release | `tools/flux-release`: Conventional Commits → semver, версия `Cargo.toml`, `CHANGELOG.md`, commit/annotated tag; pre-release, монорепо fixed/independent, opt-in publish/gh/semver-checks (ADR-0040) |
 
@@ -8864,16 +8865,20 @@ assert_eq!(ssao_factor(1.0, &[], 0.1), 1.0);
 
 Поля: `sun` (направление на солнце, `[f32; 3]`), `radiance` (HDR),
 `exposure` (стопы), `bloom_threshold`, `bloom_intensity`, `taa_alpha`
-(`0..=1`), `ssao_radius` (единицы Reversed-Z). `Default`: солнце
-`[-0.4, 0.5, 0.75]`, радиантность `[2.0, 1.9, 1.8]`, экспозиция `0`,
-порог `1.0`, интенсивность `0.5`, alpha `0.5`, радиус `0.05`.
+(`0..=1`), `ssao_radius` (единицы Reversed-Z), `sky_zenith`/`sky_horizon`
+(цвета процедурного неба, HDR) и `ibl_strength` (`0` отключает IBL, ADR-0051).
+`Default`: солнце `[-0.4, 0.5, 0.75]`, радиантность `[2.0, 1.9, 1.8]`,
+экспозиция `0`, порог `1.0`, интенсивность `0.5`, alpha `0.5`, радиус
+`0.05`, зенит `[0.05, 0.10, 0.20]`, горизонт `[0.30, 0.35, 0.45]`,
+сила IBL `1.0`.
 
-#### `FrameParams::push_constants(width, height) -> [u8; 64]`
+#### `FrameParams::push_constants(width, height) -> [u8; 96]`
 
-Сериализует блок из 4 × float4: `1/width`, `1/height`, экспозиция, порог
-bloom, солнце, интенсивность bloom, радиантность, вес TAA, радиус SSAO.
-Размер — `FRAME_PUSH_CONSTANT_BYTES = 64`; блок передаётся
-`CommandBuffer::push_constants` и читается шейдерами как
+Сериализует блок из 6 × float4 (ADR-0051): `1/width`, `1/height`,
+экспозиция, порог bloom; солнце, интенсивность bloom; радиантность, вес TAA;
+радиус SSAO, сила IBL; зенит неба; горизонт неба. Размер —
+`FRAME_PUSH_CONSTANT_BYTES = 96` (в пределах минимума Vulkan 128 B); блок
+передаётся `CommandBuffer::push_constants` и читается шейдерами как
 `[[vk::push_constant]] ConstantBuffer<FrameConstants>`.
 
 ```rust
@@ -8884,12 +8889,12 @@ assert_eq!(push.len(), FRAME_PUSH_CONSTANT_BYTES as usize);
 
 #### `GpuFrame::new(device, width, height) -> Result<Self, RhiError>`
 
-Создаёт десять изображений (RT0 `Rgba8Srgb`, RT1 `Rgba16Float`, RT2
-`Rgba8Unorm`, depth `D32Float`, SSAO `Rgba16Float`, HDR/bloom/tonemap/
-`taa_a`/`taa_b` — `Rgba16Float`), sampler `Nearest`, шесть pipeline-ов
-(push constants 64 B, G-buffer — с depth `D32Float`) и пять наборов.
-История TAA очищается в ноль, поэтому первый кадр валиден. Эквивалентен
-`with_features(..., FrameFeatures::all())`.
+Создаёт одиннадцать изображений (RT0 `Rgba8Srgb`, RT1 `Rgba16Float`, RT2
+`Rgba8Unorm`, depth и shadow `D32Float`, SSAO `Rgba16Float`,
+HDR/bloom/tonemap/`taa_a`/`taa_b` — `Rgba16Float`), sampler `Nearest`,
+шесть pipeline-ов (push constants 96 B, G-buffer — с depth `D32Float`) и
+пять наборов. История TAA очищается в ноль, поэтому первый кадр валиден.
+Эквивалентен `with_features(..., FrameFeatures::all())`.
 
 #### `FrameFeatures`
 
@@ -9008,9 +9013,11 @@ frame.destroy(&mut device);
   `ao_seed`, `depth` (Reversed-Z).
 - `reference_ssao(width, height, depth, radius) -> Vec<f32>` — 4 соседа,
   формула `post::ssao_factor`.
-- `reference_lighting(width, height, albedo_srgb, normal_oct, orm, ao, params)
-  -> Vec<Vec3>` — GGX/Smith/Fresnel/multiscatter как `pbr::evaluate_direct`,
-  умноженный на `ao` (`&[f32]`, не 8-битный байт).
+- `reference_lighting(width, height, albedo_srgb, normal_oct, orm, ao, depth,
+  params) -> Vec<Vec3>` — GGX/Smith/Fresnel/multiscatter как
+  `pbr::evaluate_direct`, умноженный на `ao` (`&[f32]`, не 8-битный байт),
+  плюс аналитический IBL; при `depth <= 0` (far) — процедурное небо по
+  camera-relative направлению взгляда (ADR-0051).
 - `reference_bloom(width, height, hdr, threshold) -> Vec<Vec3>` — порог +
   5-точечный box.
 - `reference_tonemap(hdr, bloom, params) -> Vec<Vec3>` — combine + ACES.
@@ -10664,6 +10671,16 @@ https и ssh remote.
   `null_frame_records_shadow_pass`, Vulkan
   `shadow_map_records_camera_relative_depth` (карта не пуста, сдвиг на 1e6 —
   та же карта, validation чистый).
+- **I9k (этап 4, ADR-0051)**: процедурное небо и аналитический IBL —
+  `FrameParams::sky_zenith`/`sky_horizon`/`ibl_strength`, push constants
+  расширены до 96 B (6 × float4); `frame.lighting` читает глубину
+  (binding 4) и при `depth <= 0` отдаёт небо по camera-relative направлению
+  взгляда (FOV 90°), иначе — прямое освещение плюс ambient от среды
+  (`sky_color(n)` и `reflect(-v, n)`). `reference_lighting` принимает
+  `depth` и повторяет формулы. Тесты: Null
+  `reference_sky_is_independent_of_surface_inputs`, Vulkan
+  `empty_scene_renders_procedural_sky` (пустая сцена → небо, PSNR ≥ 60 дБ),
+  PSNR-гейт lighting обновлён под IBL.
 - **flux-assetc unitypackage (ADR-0043)**: `ExtractOptions`
   (`output`/`keep_meta`/`overwrite`/`dry_run`), `ExtractReport`
   (`assets`/`folders`/`skipped`/`bytes`/`paths`) и
