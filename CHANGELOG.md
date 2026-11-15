@@ -4,6 +4,14 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.20.0] - 2026-11-15
+
+### Features
+
+#### graphics
+
+- процедурное небо и аналитический IBL (ADR-0051) ([d1e334f](https://github.com/PaoloFernetti/fluxengine/commit/d1e334f155cf86e67fe1e936c948aacd39f8228e))
+
 ## [0.19.0] - 2026-11-15
 
 ### Features
