@@ -7,7 +7,8 @@ use ash::vk;
 use super::super::cmd::ImageState;
 use super::super::error::RhiError;
 use super::super::types::{
-    AddressMode, BufferUsage, FilterMode, MipmapMode, PresentMode, TextureFormat, TextureUsage,
+    AddressMode, BufferUsage, DepthCompare, FilterMode, MipmapMode, PresentMode, TextureFormat,
+    TextureUsage,
 };
 
 /// Отображает `vk::Result` в типизированную ошибку RHI.
@@ -57,6 +58,19 @@ pub(crate) const fn texture_format(format: vk::Format) -> Option<TextureFormat> 
         vk::Format::R8_UNORM => Some(TextureFormat::R8Unorm),
         vk::Format::D32_SFLOAT => Some(TextureFormat::D32Float),
         _ => None,
+    }
+}
+
+/// Функция сравнения глубины Vulkan (ADR-0049).
+pub(crate) const fn depth_compare(compare: DepthCompare) -> vk::CompareOp {
+    match compare {
+        DepthCompare::Never => vk::CompareOp::NEVER,
+        DepthCompare::Less => vk::CompareOp::LESS,
+        DepthCompare::Equal => vk::CompareOp::EQUAL,
+        DepthCompare::LessOrEqual => vk::CompareOp::LESS_OR_EQUAL,
+        DepthCompare::Greater => vk::CompareOp::GREATER,
+        DepthCompare::GreaterOrEqual => vk::CompareOp::GREATER_OR_EQUAL,
+        DepthCompare::Always => vk::CompareOp::ALWAYS,
     }
 }
 

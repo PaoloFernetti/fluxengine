@@ -656,6 +656,9 @@ G-buffer → deferred lighting → UI-stub → present» работает на V
       шаг обязателен (`FLUX_REQUIRE_VULKAN=1`)
 - [x] Dynamic viewport/scissor в `begin_render_pass` — без него draw не
       растеризовал; PSO-тест усилен readback-проверкой цвета
+- [x] Depth-only PSO и состояние глубины (ADR-0049): `DepthCompare`,
+      `PipelineDesc::with_depth_state`; graphics без color-аттачментов при
+      наличии depth — фундамент shadow pass и скайбокса
 - [ ] Camera-relative в тенях/IBL/скайбоксе (после появления этих проходов)
 
 **Приёмка**: ABI G-buffer и PBR/tonemap/post-формулы зафиксированы и покрыты

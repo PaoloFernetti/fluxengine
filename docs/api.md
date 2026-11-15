@@ -6745,13 +6745,24 @@ assert_eq!(desc.vertex_stride, 12);
 
 Compute pipeline из SPIR-V.
 
+#### `DepthCompare`
+
+Функция сравнения глубины (ADR-0049): `Never`, `Less`, `Equal`, `LessOrEqual`,
+`Greater`, `GreaterOrEqual` (по умолчанию, Reversed-Z), `Always`.
+
 #### Билдеры `PipelineDesc`
 
 `with_color_formats(&'static [TextureFormat])`,
-`with_depth_format(TextureFormat)`, `with_vertex_stride(u32)`,
+`with_depth_format(TextureFormat)`,
+`with_depth_state(DepthCompare, bool)`, `with_vertex_stride(u32)`,
 `with_topology(PrimitiveTopology)`,
 `with_bindings(&'static [DescriptorBinding])`,
 `with_push_constants(u32)`, `with_entries(vertex_entry, fragment_entry)`.
+
+`with_depth_state(compare, write)` задаёт depth-тест (ADR-0049). Graphics
+pipeline без color-форматов допустим, если задан `depth_format`: так
+собирается depth-only shadow pass. `write = false` нужен скайбоксу
+(`Equal` против дальней плоскости), чтобы не менять глубину.
 
 `with_bindings` описывает set 0 (ADR-0039): layout кэшируется по составу
 биндингов, `bind_descriptor_set` требует совместимый pipeline.

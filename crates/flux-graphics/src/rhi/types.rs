@@ -788,6 +788,26 @@ pub enum PipelineKind {
     Compute,
 }
 
+/// Функция сравнения глубины (ADR-0049).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum DepthCompare {
+    /// Никогда не проходит.
+    Never,
+    /// Меньше.
+    Less,
+    /// Равно.
+    Equal,
+    /// Меньше или равно.
+    LessOrEqual,
+    /// Больше.
+    Greater,
+    /// Больше или равно — Reversed-Z по умолчанию (ADR-0008).
+    #[default]
+    GreaterOrEqual,
+    /// Всегда проходит.
+    Always,
+}
+
 /// Топология примитивов.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PrimitiveTopology {
@@ -826,6 +846,10 @@ pub struct PipelineDesc {
     pub color_formats: &'static [TextureFormat],
     /// Формат depth-аттачмента.
     pub depth_format: Option<TextureFormat>,
+    /// Сравнение глубины (ADR-0049).
+    pub depth_compare: DepthCompare,
+    /// Запись глубины (ADR-0049); `false` — depth-test без записи.
+    pub depth_write: bool,
     /// Шаг вершины в байтах (позиция `f32x3` — 12).
     pub vertex_stride: u32,
     /// Топология.
@@ -851,6 +875,8 @@ impl PipelineDesc {
             compute_entry: "cs_main",
             color_formats: &[],
             depth_format: None,
+            depth_compare: DepthCompare::GreaterOrEqual,
+            depth_write: true,
             vertex_stride: 12,
             topology: PrimitiveTopology::TriangleList,
             bindings: &[],
@@ -894,6 +920,14 @@ impl PipelineDesc {
     #[must_use]
     pub const fn with_depth_format(mut self, format: TextureFormat) -> Self {
         self.depth_format = Some(format);
+        self
+    }
+
+    /// Задаёт состояние depth-теста (ADR-0049).
+    #[must_use]
+    pub const fn with_depth_state(mut self, compare: DepthCompare, write: bool) -> Self {
+        self.depth_compare = compare;
+        self.depth_write = write;
         self
     }
 
@@ -1144,5 +1178,17 @@ mod tests {
         assert!(pass.has_attachments());
         assert_eq!(pass.color_attachments, vec![ImageId(1)]);
         assert_eq!(pass.clear_color, [0.1, 0.2, 0.3, 1.0]);
+    }
+
+    #[test]
+    fn depth_state_defaults_to_reversed_z() {
+        let desc =
+            PipelineDesc::graphics("shadow", &[], &[]).with_depth_format(TextureFormat::D32Float);
+        assert_eq!(desc.depth_compare, DepthCompare::GreaterOrEqual);
+        assert!(desc.depth_write);
+        assert!(desc.color_formats.is_empty());
+        let sky = desc.with_depth_state(DepthCompare::Equal, false);
+        assert_eq!(sky.depth_compare, DepthCompare::Equal);
+        assert!(!sky.depth_write);
     }
 }

@@ -76,7 +76,7 @@ flowchart LR
 - Каждый термин из ADR обязан иметь запись в глоссарии канона
   (правило «термин имеет владельца»).
 
-## Индекс (ADR-0001…0027 — архитектурная фаза; 0028…0030 — этап 2; 0031…0033 — этап 3; 0034…0048 — этап 4/инструменты)
+## Индекс (ADR-0001…0027 — архитектурная фаза; 0028…0030 — этап 2; 0031…0033 — этап 3; 0034…0049 — этап 4/инструменты)
 
 | ADR | Решение | Источник |
 |---|---|---|
@@ -128,6 +128,7 @@ flowchart LR
 | 0046 | Копирование buffer→buffer: staging upload в device-local storage, `TRANSFER_WRITE → SHADER_READ` барьер, Null-эмуляция | flux-graphics |
 | 0047 | GPU-геометрия сцены: vertex pulling `SV_VertexID`/`SV_InstanceID` из storage-буферов, `GpuFrame::render_scene`, палитра-заглушка | flux-graphics |
 | 0048 | UI-stub и present: `frame.ui` читает tonemap/TAA-выход и пишет в acquired-образ swapchain, `GpuFrame::render_to`/`present` | flux-graphics |
+| 0049 | Depth-only pipelines и состояние глубины: `DepthCompare`, `PipelineDesc::with_depth_state`, пустые color-форматы при depth-аттачменте (тени, скайбокс) | flux-graphics |
 
 Дополнительные решения, зафиксированные в плане, но не требующие отдельных
 ADR-файлов (частично покрыты выше): input abstraction (flux-platform),

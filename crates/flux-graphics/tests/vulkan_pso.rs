@@ -9,13 +9,14 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use flux_graphics::{
-    BarrierBatch, BindingKind, BufferUsage, DescriptorBinding, DescriptorSetDesc, DescriptorWrite,
-    GpuBufferDesc, GpuImageDesc, ImageState, PipelineCacheFile, PipelineCacheLoad, PipelineDesc,
-    RenderPassDesc, RhiDevice, TextureFormat, TextureUsage, VulkanDevice,
+    BarrierBatch, BindingKind, BufferUsage, DepthCompare, DescriptorBinding, DescriptorSetDesc,
+    DescriptorWrite, GpuBufferDesc, GpuImageDesc, ImageState, PipelineCacheFile, PipelineCacheLoad,
+    PipelineDesc, RenderPassDesc, RhiDevice, TextureFormat, TextureUsage, VulkanDevice,
 };
 
 const FULLSCREEN_VS: &[u8] = include_bytes!("../shaders/compiled/fullscreen.vert.spv");
 const SOLID_FS: &[u8] = include_bytes!("../shaders/compiled/solid.frag.spv");
+const SHADOW_FS: &[u8] = include_bytes!("../shaders/compiled/shadow.frag.spv");
 
 const COLOR_FORMATS: &[TextureFormat] = &[TextureFormat::Rgba8Srgb];
 
@@ -40,7 +41,11 @@ fn spirv_magic(bytes: &[u8]) -> u32 {
 
 #[test]
 fn committed_spirv_is_vulkan_module() {
-    for (label, bytes) in [("fullscreen.vert", FULLSCREEN_VS), ("solid.frag", SOLID_FS)] {
+    for (label, bytes) in [
+        ("fullscreen.vert", FULLSCREEN_VS),
+        ("solid.frag", SOLID_FS),
+        ("shadow.frag", SHADOW_FS),
+    ] {
         assert!(bytes.len() >= 20, "{label}: SPIR-V слишком короткий");
         assert_eq!(bytes.len() % 4, 0, "{label}: SPIR-V не кратен 4 байтам");
         assert_eq!(
@@ -49,6 +54,62 @@ fn committed_spirv_is_vulkan_module() {
             "{label}: неверная сигнатура SPIR-V"
         );
     }
+}
+
+#[test]
+fn depth_only_pipeline_renders_shadow_pass() {
+    let Some(mut device) = runtime_device() else {
+        return;
+    };
+    let before = device.validation_errors();
+
+    let depth = device
+        .create_image(
+            &GpuImageDesc::new("shadow-depth", 64, 64, TextureFormat::D32Float).with_usage(
+                TextureUsage {
+                    depth_stencil: true,
+                    sampled: true,
+                    transfer_src: true,
+                    ..TextureUsage::none()
+                },
+            ),
+        )
+        .unwrap();
+    // ADR-0049: graphics pipeline без color-аттачментов допустим, если есть
+    // depth; состояние глубины задаётся явно.
+    let desc = PipelineDesc::graphics("shadow", FULLSCREEN_VS, SHADOW_FS)
+        .with_depth_format(TextureFormat::D32Float)
+        .with_vertex_stride(0)
+        .with_depth_state(DepthCompare::GreaterOrEqual, true);
+    let pipeline = device.create_pipeline(&desc).unwrap();
+
+    let mut commands = device.create_command_buffer().unwrap();
+    commands.begin().unwrap();
+    let mut batch = BarrierBatch::new();
+    batch.transition(depth, ImageState::Undefined, ImageState::DepthAttachment);
+    commands.barriers(&batch).unwrap();
+    let pass = RenderPassDesc::new("shadow").with_depth(depth);
+    commands.begin_render_pass(&pass).unwrap();
+    commands.set_pipeline(pipeline).unwrap();
+    commands.draw(3, 1).unwrap();
+    commands.end_render_pass().unwrap();
+    commands.end().unwrap();
+    commands.finish().unwrap();
+    device.wait_idle().unwrap();
+
+    // Без color-форматов и без depth pipeline отвергается.
+    let invalid = PipelineDesc::graphics("invalid", FULLSCREEN_VS, SHADOW_FS).with_vertex_stride(0);
+    assert!(device.create_pipeline(&invalid).is_err());
+
+    assert_eq!(
+        device.validation_errors(),
+        before,
+        "validation log is dirty"
+    );
+    assert!(device.destroy_pipeline(pipeline));
+    assert!(device.destroy_image(depth));
+    device.wait_idle().unwrap();
+    assert_eq!(device.live_resources(), 0);
 }
 
 #[test]

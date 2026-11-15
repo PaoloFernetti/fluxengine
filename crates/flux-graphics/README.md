@@ -103,6 +103,10 @@ flux-graphics = { workspace = true, features = ["vulkan"] }
   `CommandBuffer::push_constants(&[u8])`; Vulkan создаёт `VkPushConstantRange`
   (`VERTEX | FRAGMENT` / `COMPUTE`) и вызывает `cmd_push_constants`, Null
   валидирует размер/выравнивание и отдаёт `push_constants_bytes()`.
+- Depth-only и состояние глубины (ADR-0049): `DepthCompare`,
+  `PipelineDesc::with_depth_state(compare, write)`. Graphics pipeline без
+  color-аттачментов допустим при наличии `depth_format`: shadow pass пишет
+  только глубину, скайбокс использует `Equal` без записи.
 - Копирование и readback: `copy_buffer_to_image`/`copy_image_to_buffer`
   (вне render pass), `write_buffer`/`read_buffer` для host-visible staging.
   Buffer→buffer (ADR-0046): `copy_buffer_to_buffer(src, dst, size)` —

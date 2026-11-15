@@ -686,9 +686,9 @@ fn build_pipeline(
                     "graphics pipeline requires vertex and fragment SPIR-V",
                 ));
             }
-            if desc.color_formats.is_empty() {
+            if desc.color_formats.is_empty() && desc.depth_format.is_none() {
                 return Err(RhiError::validation(
-                    "graphics pipeline requires color formats",
+                    "graphics pipeline requires color formats or a depth attachment",
                 ));
             }
             let colors: Vec<i32> = desc
@@ -763,9 +763,9 @@ fn build_pipeline(
             let depth_stencil = if depth.is_some() {
                 vk::PipelineDepthStencilStateCreateInfo::default()
                     .depth_test_enable(true)
-                    .depth_write_enable(true)
-                    // Reversed-Z: ближе — больше (ADR-0008).
-                    .depth_compare_op(vk::CompareOp::GREATER_OR_EQUAL)
+                    .depth_write_enable(desc.depth_write)
+                    // Reversed-Z по умолчанию: ближе — больше (ADR-0008).
+                    .depth_compare_op(convert::depth_compare(desc.depth_compare))
             } else {
                 vk::PipelineDepthStencilStateCreateInfo::default()
             };
