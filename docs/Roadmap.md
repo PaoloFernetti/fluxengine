@@ -659,7 +659,10 @@ G-buffer → deferred lighting → UI-stub → present» работает на V
 - [x] Depth-only PSO и состояние глубины (ADR-0049): `DepthCompare`,
       `PipelineDesc::with_depth_state`; graphics без color-аттачментов при
       наличии depth — фундамент shadow pass и скайбокса
-- [ ] Camera-relative в тенях/IBL/скайбоксе (после появления этих проходов)
+- [x] Shadow map (ADR-0050): `frame.shadow` — depth-only, camera-relative
+      light space (`shadow_view_projection`), `FrameStage::Shadow`;
+      сдвиг камеры и инстанса на `1e6` не меняет карту
+- [ ] IBL и скайбокс (camera-relative направления)
 
 **Приёмка**: ABI G-buffer и PBR/tonemap/post-формулы зафиксированы и покрыты
 тестами; Vulkan собирает PSO из SPIR-V; clearcoat добавляется keyword-ом без

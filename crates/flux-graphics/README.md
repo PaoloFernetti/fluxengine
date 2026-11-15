@@ -138,6 +138,16 @@ flux-graphics = { workspace = true, features = ["vulkan"] }
   запросов). Vulkan-тест `ui_stub_is_presented_to_swapchain`: эталон без
   `frame.ui` через `render`+`readback`, панель сверяется по формуле шейдера
   `0.2·scene + 0.016`, вне панели кадры совпадают, validation чистый.
+- Shadow map (4.6, ADR-0050): `frame.shadow` — первый depth-only проход при
+  наличии сцены; `SceneGeometry::shadow_pipeline` (`D32Float`,
+  `GreaterOrEqual`, depth write), light VP — `shadow_view_projection`
+  (camera-relative ортопроекция вокруг origin, Reversed-Z), карта
+  `SHADOW_MAP_SIZE = 512`². `FrameStage::Shadow` читается через `readback`
+  размером карты. Шейдер `shadow_scene.vert.hlsl` использует
+  `[[vk::binding]]`/`[[vk::push_constant]]` — без них DXC создаёт UBO и
+  матрица не доходит. Vulkan-тест `shadow_map_records_camera_relative_depth`:
+  карта не пуста, сдвиг камеры и инстанса на `1e6` даёт ту же карту,
+  validation чистый.
 - Extract (4.5): `render::cull` отсекает инстансы по camera-relative AABB
   (`cull_instances`, `CullStats`), `RenderScene::extract(alpha, frustum)`
   совмещает интерполяцию и culling, отдаёт `visible_indices()` и

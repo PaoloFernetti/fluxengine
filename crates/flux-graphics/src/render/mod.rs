@@ -31,8 +31,9 @@ pub use frame::{
 };
 pub use gbuffer::GbufferLayout;
 pub use geometry::{
-    scene_push_constants, SceneGeometry, MATERIAL_PALETTE, SCENE_INSTANCE_BYTES,
-    SCENE_PUSH_CONSTANT_BYTES, SCENE_VERTEX_BYTES,
+    scene_push_constants, shadow_view_projection, SceneGeometry, MATERIAL_PALETTE,
+    SCENE_INSTANCE_BYTES, SCENE_PUSH_CONSTANT_BYTES, SCENE_VERTEX_BYTES, SHADOW_EXTENT,
+    SHADOW_LIGHT_DIR, SHADOW_MAP_SIZE,
 };
 pub use graph::{
     AliasSlot, CompiledPass, GraphError, GraphImage, GraphImageKey, GraphPass, PassKind,

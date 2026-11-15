@@ -12,8 +12,9 @@
 use flux_graphics::{
     decode_rgba16f, encode_srgb_u8, oct_decode, psnr_bytes, psnr_channels, reference_bloom,
     reference_gbuffer, reference_lighting, reference_ssao, reference_taa, reference_tonemap,
-    Camera, FrameFeatures, FrameParams, FrameStage, GpuFrame, RenderScene, RhiDevice,
-    SceneGeometry, VulkanDevice, FRAME_PASS_COUNT, FRAME_PASS_NAMES, MATERIAL_PALETTE,
+    shadow_view_projection, Camera, FrameFeatures, FrameParams, FrameStage, GpuFrame, RenderScene,
+    RhiDevice, SceneGeometry, VulkanDevice, FRAME_PASS_COUNT, FRAME_PASS_NAMES, MATERIAL_PALETTE,
+    SHADOW_LIGHT_DIR, SHADOW_MAP_SIZE,
 };
 use flux_math::{Frustum, Vec3};
 
@@ -284,6 +285,114 @@ fn scene_geometry_fills_gbuffer() {
         "center depth={center_depth}"
     );
     assert_eq!(read(0), 0.0);
+
+    device.wait_idle().unwrap();
+    assert_eq!(
+        device.validation_errors(),
+        before,
+        "validation log is dirty"
+    );
+    geometry.destroy(&mut device);
+    frame.destroy(&mut device);
+    device.wait_idle().unwrap();
+    assert_eq!(device.live_resources(), 0);
+}
+
+#[test]
+fn shadow_map_records_camera_relative_depth() {
+    let Some(mut device) = runtime_device() else {
+        return;
+    };
+    let before = device.validation_errors();
+    let camera = Camera {
+        aspect: 1.0,
+        ..Camera::default()
+    };
+    let mut scene = RenderScene::new();
+    scene.set_camera_position(camera.position);
+    let position = Vec3::new(0.0, 0.0, -2.0);
+    scene.push(position, position, 0, 0);
+    scene.extract(
+        1.0,
+        &Frustum::from_view_projection(camera.view_projection()),
+    );
+    let mut geometry = SceneGeometry::new(&mut device, 4).unwrap();
+    geometry.upload(&mut device, &scene).unwrap();
+
+    let mut frame =
+        GpuFrame::with_features(&mut device, SIZE, SIZE, FrameFeatures::none()).unwrap();
+    frame
+        .render_scene(&mut device, &FrameParams::default(), &geometry, &camera)
+        .unwrap();
+
+    let read_depth = |bytes: &[u8], x: u32, y: u32| {
+        let offset = ((y * SHADOW_MAP_SIZE + x) * 4) as usize;
+        f32::from_bits(u32::from_le_bytes([
+            bytes[offset],
+            bytes[offset + 1],
+            bytes[offset + 2],
+            bytes[offset + 3],
+        ]))
+    };
+    // Ортопроекция света центрирована на камере (origin), а куб стоит в
+    // camera-relative (0, 0, -2): центр карты — точка под камерой, не куб.
+    // Проверяем пиксель проекции центра куба; Y-flip между HLSL clip space
+    // и Vulkan-framebuffer заранее неизвестен, поэтому берём оба варианта.
+    let center_ndc = shadow_view_projection(SHADOW_LIGHT_DIR).project_point3(position);
+    let pixel =
+        |ndc: f32| (((ndc * 0.5 + 0.5) * SHADOW_MAP_SIZE as f32) as u32).min(SHADOW_MAP_SIZE - 1);
+    let (px, py) = (pixel(center_ndc.x), pixel(center_ndc.y));
+    let flipped_y = SHADOW_MAP_SIZE - 1 - py;
+    let shadow = frame.readback(&mut device, FrameStage::Shadow).unwrap();
+    assert_eq!(
+        shadow.len(),
+        (SHADOW_MAP_SIZE * SHADOW_MAP_SIZE * 4) as usize
+    );
+    let cube_depth = read_depth(&shadow, px, py).max(read_depth(&shadow, px, flipped_y));
+    let filled = shadow
+        .chunks_exact(4)
+        .filter(|pixel| f32::from_le_bytes([pixel[0], pixel[1], pixel[2], pixel[3]]) > 0.0)
+        .count();
+    let max_depth = shadow
+        .chunks_exact(4)
+        .map(|pixel| f32::from_bits(u32::from_le_bytes([pixel[0], pixel[1], pixel[2], pixel[3]])))
+        .fold(0.0f32, f32::max);
+    assert!(
+        cube_depth > 0.0 && cube_depth < 1.0,
+        "cube shadow depth={cube_depth} at ({px}, {py}) filled={filled} max={max_depth}"
+    );
+    assert!(filled > 0, "shadow map is empty");
+    assert_eq!(read_depth(&shadow, 1, 1), 0.0, "вне куба — clear 0.0");
+
+    // Camera-relative: камера и инстанс сдвинуты на 1e6, относительная
+    // позиция та же — карта теней совпадает.
+    let far_camera = Camera {
+        position: Vec3::new(1.0e6, 0.0, 0.0),
+        aspect: 1.0,
+        ..Camera::default()
+    };
+    let mut far_scene = RenderScene::new();
+    far_scene.set_camera_position(far_camera.position);
+    let world = Vec3::new(1.0e6, 0.0, -2.0);
+    far_scene.push(world, world, 0, 0);
+    far_scene.extract(
+        1.0,
+        &Frustum::from_view_projection(far_camera.view_projection()),
+    );
+    geometry.upload(&mut device, &far_scene).unwrap();
+    frame
+        .render_scene(&mut device, &FrameParams::default(), &geometry, &far_camera)
+        .unwrap();
+    let far_shadow = frame.readback(&mut device, FrameStage::Shadow).unwrap();
+    let center_far = read_depth(&far_shadow, px, py).max(read_depth(&far_shadow, px, flipped_y));
+    assert!(
+        (cube_depth - center_far).abs() < 1.0e-4,
+        "camera-relative: {cube_depth} vs {center_far}"
+    );
+    assert_eq!(
+        far_shadow, shadow,
+        "camera-relative: карта теней не зависит от мировых координат"
+    );
 
     device.wait_idle().unwrap();
     assert_eq!(

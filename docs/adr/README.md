@@ -76,7 +76,7 @@ flowchart LR
 - Каждый термин из ADR обязан иметь запись в глоссарии канона
   (правило «термин имеет владельца»).
 
-## Индекс (ADR-0001…0027 — архитектурная фаза; 0028…0030 — этап 2; 0031…0033 — этап 3; 0034…0049 — этап 4/инструменты)
+## Индекс (ADR-0001…0027 — архитектурная фаза; 0028…0030 — этап 2; 0031…0033 — этап 3; 0034…0050 — этап 4/инструменты)
 
 | ADR | Решение | Источник |
 |---|---|---|
@@ -129,6 +129,7 @@ flowchart LR
 | 0047 | GPU-геометрия сцены: vertex pulling `SV_VertexID`/`SV_InstanceID` из storage-буферов, `GpuFrame::render_scene`, палитра-заглушка | flux-graphics |
 | 0048 | UI-stub и present: `frame.ui` читает tonemap/TAA-выход и пишет в acquired-образ swapchain, `GpuFrame::render_to`/`present` | flux-graphics |
 | 0049 | Depth-only pipelines и состояние глубины: `DepthCompare`, `PipelineDesc::with_depth_state`, пустые color-форматы при depth-аттачменте (тени, скайбокс) | flux-graphics |
+| 0050 | Shadow map: camera-relative light space — `shadow_view_projection`, `frame.shadow` (depth-only, 512²), `FrameStage::Shadow`, vertex pulling с `[[vk::push_constant]]` | flux-graphics |
 
 Дополнительные решения, зафиксированные в плане, но не требующие отдельных
 ADR-файлов (частично покрыты выше): input abstraction (flux-platform),
@@ -215,6 +216,12 @@ undo × PIE × стриминг (flux-editor), golden-сейвы, virtual textur
 - Метки `D…` внутри ADR-0041 (`D3`, `D8`) — исторические обозначения работ
   этапа 4; отдельной таблицы долгов больше нет, актуальный порядок — чекбоксы
   этапов 4–7 в [Roadmap.md](../Roadmap.md). Формулировки ADR не переписываются.
+- ADR-0050 уточняет shader ABI ADR-0035 для vertex pulling: `StructuredBuffer`
+  и `cbuffer` в HLSL обязаны иметь Vulkan-атрибуты `[[vk::binding(set,
+  binding)]]` и `[[vk::push_constant]]`. Без них DXC для SPIR-V создаёт
+  UBO/дескрипторы, push constants до шейдера не доходят, и depth-only проход
+  даёт пустую карту при чистом validation. Формулировка ADR-0035 не
+  переписывается.
 - Правило: индекс отражает актуальные числа/этапы; формулировки решений в
   ADR-файлах не переписываются, расхождение оформляется как уточнение здесь.
 

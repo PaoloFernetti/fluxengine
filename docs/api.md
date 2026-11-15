@@ -51,6 +51,7 @@
 | 4 | I9g | Копирование buffer→buffer: `copy_buffer_to_buffer`, upload staging → device-local storage, барьер `TRANSFER_WRITE → SHADER_READ` (ADR-0046) |
 | 4 | I9h | GPU-геометрия сцены: `SceneGeometry` (vertex pulling `SV_VertexID`/`SV_InstanceID`), `GpuFrame::render_scene`, unit-куб и инстансы в storage-буферах (ADR-0047) |
 | 4 | I9i | UI-stub и present: проход `frame.ui` читает tonemap/TAA-выход и пишет в acquired-образ swapchain, `GpuFrame::render_to`/`present` (ADR-0048) |
+| 4 | I9j | Shadow map: `frame.shadow` (depth-only, camera-relative light space), `SceneGeometry::shadow_pipeline`, `shadow_view_projection`, `SHADOW_MAP_SIZE`/`SHADOW_LIGHT_DIR`/`SHADOW_EXTENT`, `FrameStage::Shadow` (ADR-0050) |
 | — | tool | `tools/flux-assetc unitypackage`: gzip/tar → дерево `Assets/`, meta рядом, защита от traversal, `--no-meta`/`--overwrite`/`--dry-run` (ADR-0043) |
 | — | release | `tools/flux-release`: Conventional Commits → semver, версия `Cargo.toml`, `CHANGELOG.md`, commit/annotated tag; pre-release, монорепо fixed/independent, opt-in publish/gh/semver-checks (ADR-0040) |
 
@@ -6381,7 +6382,8 @@ use flux_graphics::{
     ShaderCompiler, ShaderDeclaration, ShaderError, ShaderLibrary, ShaderStage, SurfaceId,
     SurfaceKind, SurfaceTarget, Swapchain, SwapchainDesc, SwapchainId, TextureFormat, TextureUsage,
     Tonemap, TransferSystem, UploadJob, VertexInput, VramAllocator, VramBudget, VramLease,
-    WindowSurface, FRAME_PASS_COUNT, FRAME_PASS_NAMES, FRAME_PUSH_CONSTANT_BYTES, FRAME_QUERY_COUNT,
+    WindowSurface, SHADOW_EXTENT, SHADOW_LIGHT_DIR, SHADOW_MAP_SIZE, shadow_view_projection,
+    FRAME_PASS_COUNT, FRAME_PASS_NAMES, FRAME_PUSH_CONSTANT_BYTES, FRAME_QUERY_COUNT,
     MAX_KEYWORDS, MAX_MATERIAL_KEYWORDS, MAX_RENDER_SCALE, MAX_SHADOW_RESOLUTION, MIN_RENDER_SCALE,
     MIN_SHADOW_RESOLUTION, VERTEX_FORMAT_V1,
 };
@@ -8927,6 +8929,11 @@ vertex pulling (ADR-0047) вместо процедурного полноэкр
 Push constants G-buffer-прохода — `camera.view_projection()` (64 B);
 остальные проходы не меняются.
 
+Первым при наличии сцены идёт `frame.shadow` (ADR-0050): depth-only проход
+пишет карту `SHADOW_MAP_SIZE²` из `shadow_view_projection(SHADOW_LIGHT_DIR)`
+(light VP в push constants, инстансы — те же camera-relative). Проход не
+входит в `FRAME_PASS_NAMES`/FrameStats.
+
 #### `GpuFrame::render_to(&mut self, device, params, target, target_format) -> Result<(), RhiError>`
 
 Кадр с финальным проходом `frame.ui` (ADR-0048): читает tonemap/TAA-выход,
@@ -8945,19 +8952,22 @@ Push constants G-buffer-прохода — `camera.view_projection()` (64 B);
 
 Изображение, его текущее состояние и байт на пиксель для `FrameStage`:
 `Albedo` (RT0, 4), `Normal` (RT1, 8), `Orm` (RT2, 4), `Depth` (4),
-`Ssao`/`Hdr`/`Bloom`/`Tonemap` (8; без TAA `Tonemap` — выходной образ),
-`Taa` — последний записанный выход (8).
+`Shadow` (карта `SHADOW_MAP_SIZE²`, 4), `Ssao`/`Hdr`/`Bloom`/`Tonemap`
+(8; без TAA `Tonemap` — выходной образ), `Taa` — последний записанный
+выход (8).
 
 #### `GpuFrame::readback(&mut self, device, stage) -> Result<Vec<u8>, RhiError>`
 
 Читает стадию в staging-буфер: барьер `from → TransferSrc`,
 `copy_image_to_buffer`, `wait_idle`, `read_buffer`; состояние изображения
-становится `TransferSrc`. Байты — сырые для формата стадии.
+становится `TransferSrc`. Байты — сырые для формата стадии. Для
+`FrameStage::Shadow` размер — `SHADOW_MAP_SIZE × SHADOW_MAP_SIZE × 4`, а не
+размер кадра.
 
 #### `GpuFrame::destroy(self, device)`
 
-Освобождает pipeline-ы, наборы, sampler, timestamp-пул и все десять
-изображений.
+Освобождает pipeline-ы, наборы, sampler, timestamp-пул и все одиннадцать
+изображений (включая shadow map).
 
 #### FrameStats по пассам
 
@@ -9046,8 +9056,9 @@ staging + `copy_buffer_to_buffer` (ADR-0046).
 
 Создаёт буферы вершин/инстансов (`storage | transfer_dst`), staging,
 pipeline `scene-gbuffer` (форматы G-buffer, `D32Float`, push constants 64 B,
-`vertex_stride = 0`) и descriptor set 0 (binding 0 — вершины, 1 — инстансы).
-Нулевая ёмкость — `Validation`.
+`vertex_stride = 0`), depth-only `scene-shadow` (`D32Float`,
+`DepthCompare::GreaterOrEqual`, depth write, ADR-0050) и descriptor set 0
+(binding 0 — вершины, 1 — инстансы). Нулевая ёмкость — `Validation`.
 
 #### `SceneGeometry::upload(&mut self, device, scene) -> Result<(), RhiError>`
 
@@ -9072,11 +9083,15 @@ geometry.destroy(&mut device);
 #### Доступ
 
 - `capacity()`, `instance_count()`, `vertex_count()` — состояние геометрии.
-- `pipeline()`, `descriptor_set()` — для G-buffer-прохода `GpuFrame`.
+- `pipeline()`, `shadow_pipeline()`, `descriptor_set()` — для G-buffer- и
+  shadow-проходов `GpuFrame`.
 - `scene_push_constants(&Mat4) -> [u8; 64]` — view-projection column-major.
-- `destroy(self, device)` — pipeline, набор и три буфера.
+- `shadow_view_projection(light_dir) -> Mat4` — camera-relative ортопроекция
+  света вокруг origin, Reversed-Z (ADR-0050).
+- `destroy(self, device)` — обе pipeline, набор и три буфера.
 - Константы: `SCENE_VERTEX_BYTES = 24`, `SCENE_INSTANCE_BYTES = 48`,
-  `SCENE_PUSH_CONSTANT_BYTES = 64`, `MATERIAL_PALETTE`.
+  `SCENE_PUSH_CONSTANT_BYTES = 64`, `MATERIAL_PALETTE`, `SHADOW_MAP_SIZE = 512`,
+  `SHADOW_EXTENT = 12.0`, `SHADOW_LIGHT_DIR`.
 
 #### Проверка
 
@@ -9084,6 +9099,12 @@ geometry.destroy(&mut device);
 readback RT0 (albedo), RT2 (ORM) и глубины (Reversed-Z), чистый validation.
 Null-тест `null_frame_renders_scene_geometry` проверяет upload и draw-команды
 (шейдеры Null не исполняет).
+
+`tests/vulkan_frame.rs::shadow_map_records_camera_relative_depth` (ADR-0050):
+карта не пуста, глубина в `(0, 1)`, вне куба — clear `0.0`; сдвиг камеры и
+инстанса на `1e6` даёт побайтно ту же карту; validation чистый,
+`live_resources() == 0`. Null-тест `null_frame_records_shadow_pass` — размер
+карты и отсутствие ошибок RHI.
 
 ### Шейдерные пермутации ✅
 
@@ -10632,6 +10653,17 @@ https и ssh remote.
   `ui_stub_is_presented_to_swapchain` (эталон без `frame.ui` через
   `render`+`readback`, сравнение в линейном пространстве по формуле
   `0.2·scene + 0.016`, validation чистый).
+- **I9j (этап 4, ADR-0050)**: shadow map — `frame.shadow` (первый пасс графа
+  при наличии сцены, depth-only `D32Float`, clear 0.0, store) пишет карту
+  `SHADOW_MAP_SIZE²`; `shadow_view_projection` строит camera-relative
+  ортопроекцию Reversed-Z вокруг origin; `SceneGeometry::shadow_pipeline` —
+  depth-only PSO с `GreaterOrEqual` и depth write; `FrameStage::Shadow`
+  читается через `readback` размером карты. Шейдер
+  `shadow_scene.vert.hlsl` использует `[[vk::binding]]`/`[[vk::push_constant]]`
+  (без них DXC создаёт UBO и матрица не доходит). Тесты: Null
+  `null_frame_records_shadow_pass`, Vulkan
+  `shadow_map_records_camera_relative_depth` (карта не пуста, сдвиг на 1e6 —
+  та же карта, validation чистый).
 - **flux-assetc unitypackage (ADR-0043)**: `ExtractOptions`
   (`output`/`keep_meta`/`overwrite`/`dry_run`), `ExtractReport`
   (`assets`/`folders`/`skipped`/`bytes`/`paths`) и

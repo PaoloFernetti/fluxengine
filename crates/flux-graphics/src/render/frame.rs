@@ -28,7 +28,9 @@ use super::super::rhi::{
     SamplerDesc, SamplerId, Swapchain, TextureFormat, TextureUsage,
 };
 use super::gbuffer::{GbufferLayout, COLOR_ATTACHMENTS};
-use super::geometry::{scene_push_constants, SceneGeometry};
+use super::geometry::{
+    scene_push_constants, shadow_view_projection, SceneGeometry, SHADOW_LIGHT_DIR, SHADOW_MAP_SIZE,
+};
 use super::graph::{GraphImage, GraphImageKey, GraphPass, PassKind, RenderGraph};
 use super::pbr::{self, Material};
 use super::post;
@@ -220,6 +222,8 @@ pub enum FrameStage {
     Orm,
     /// Глубина D32 (Reversed-Z).
     Depth,
+    /// Shadow map D32 (camera-relative light space, ADR-0050).
+    Shadow,
     /// SSAO (RGBA8 UNORM).
     Ssao,
     /// HDR после lighting (RGBA16F).
@@ -289,6 +293,8 @@ pub struct GpuFrame {
     rt1: ImageId,
     rt2: ImageId,
     depth: ImageId,
+    /// Shadow map (ADR-0050); сторона [`SHADOW_MAP_SIZE`].
+    shadow: ImageId,
     ssao: ImageId,
     hdr: ImageId,
     bloom: ImageId,
@@ -380,6 +386,14 @@ impl GpuFrame {
             width,
             height,
             layout.depth,
+            depth_usage,
+        )?;
+        let shadow = create_image(
+            device,
+            "frame-shadow",
+            SHADOW_MAP_SIZE,
+            SHADOW_MAP_SIZE,
+            TextureFormat::D32Float,
             depth_usage,
         )?;
         let ssao = create_image(
@@ -565,6 +579,7 @@ impl GpuFrame {
             rt1,
             rt2,
             depth,
+            shadow,
             ssao,
             hdr,
             bloom,
@@ -708,6 +723,7 @@ impl GpuFrame {
             FrameStage::Normal => (self.rt1, ImageState::ShaderRead, 8),
             FrameStage::Orm => (self.rt2, ImageState::ShaderRead, 4),
             FrameStage::Depth => (self.depth, ImageState::ShaderRead, 4),
+            FrameStage::Shadow => (self.shadow, ImageState::ShaderRead, 4),
             FrameStage::Ssao => (self.ssao, ImageState::ShaderRead, 8),
             FrameStage::Hdr => (self.hdr, ImageState::ShaderRead, 8),
             FrameStage::Bloom => (self.bloom, ImageState::ShaderRead, 8),
@@ -747,10 +763,14 @@ impl GpuFrame {
     ) -> Result<(), RhiError> {
         let scene = SceneDraw {
             pipeline: geometry.pipeline(),
+            shadow_pipeline: geometry.shadow_pipeline(),
             set: geometry.descriptor_set(),
             vertices: geometry.vertex_count(),
             instances: geometry.instance_count(),
             push: scene_push_constants(&camera.view_projection()),
+            // Camera-relative: матрица света строится вокруг камеры, а не
+            // world origin (ADR-0050).
+            shadow_push: scene_push_constants(&shadow_view_projection(SHADOW_LIGHT_DIR)),
         };
         self.render_inner(device, params, Some(&scene), None)
     }
@@ -840,7 +860,12 @@ impl GpuFrame {
                 .insert(GraphImageKey(image.0), ImageState::ColorAttachment);
             self.ensure_present(device, format, output)?;
         }
-        let graph = self.frame_graph(history, output, target.map(|(image, _)| image))?;
+        let graph = self.frame_graph(
+            history,
+            output,
+            target.map(|(image, _)| image),
+            scene.is_some(),
+        )?;
         let plan = graph
             .compile_with_initial(&self.states)
             .map_err(|error| RhiError::validation(format!("frame graph: {error}")))?;
@@ -863,6 +888,7 @@ impl GpuFrame {
         }
         let (rt0, rt1, rt2, depth) = (self.rt0, self.rt1, self.rt2, self.depth);
         let (ssao, hdr, bloom) = (self.ssao, self.hdr, self.bloom);
+        let shadow = self.shadow;
         let pipelines = &self.pipelines;
         let sets = &self.sets;
         let present = self
@@ -878,6 +904,21 @@ impl GpuFrame {
                 commands.write_timestamp(query_pool, slot * 2)?;
             }
             let result = match pass.name {
+                "frame.shadow" => {
+                    let scene = scene.ok_or_else(|| {
+                        RhiError::validation("frame.shadow without scene geometry")
+                    })?;
+                    let desc = RenderPassDesc::new("frame-shadow").with_depth(shadow);
+                    draw_geometry(
+                        commands,
+                        scene.shadow_pipeline,
+                        scene.set,
+                        scene.vertices,
+                        scene.instances,
+                        &scene.shadow_push,
+                        &desc,
+                    )
+                }
                 "frame.gbuffer" => {
                     let desc = RenderPassDesc::new("frame-gbuffer")
                         .with_color(rt0)
@@ -886,7 +927,15 @@ impl GpuFrame {
                         .with_depth(depth)
                         .with_clear([0.0, 0.0, 0.0, 1.0]);
                     match scene {
-                        Some(scene) => draw_geometry(commands, scene, &desc),
+                        Some(scene) => draw_geometry(
+                            commands,
+                            scene.pipeline,
+                            scene.set,
+                            scene.vertices,
+                            scene.instances,
+                            &scene.push,
+                            &desc,
+                        ),
                         None => draw(commands, pipelines.gbuffer, None, &push, &desc),
                     }
                 }
@@ -969,7 +1018,14 @@ impl GpuFrame {
         // последний выход — ColorAttachment.
         self.states.clear();
         let mut read_images = vec![
-            self.rt0, self.rt1, self.rt2, self.depth, self.ssao, self.hdr, self.bloom,
+            self.rt0,
+            self.rt1,
+            self.rt2,
+            self.depth,
+            self.shadow,
+            self.ssao,
+            self.hdr,
+            self.bloom,
         ];
         if self.features.taa {
             read_images.push(self.tonemap);
@@ -1071,8 +1127,13 @@ impl GpuFrame {
         stage: FrameStage,
     ) -> Result<Vec<u8>, RhiError> {
         let (image, from, bytes_per_pixel) = self.stage(stage);
-        let bytes = u64::from(self.width)
-            .saturating_mul(u64::from(self.height))
+        // Shadow map не совпадает по размеру с кадром (ADR-0050).
+        let (width, height) = match stage {
+            FrameStage::Shadow => (SHADOW_MAP_SIZE, SHADOW_MAP_SIZE),
+            _ => (self.width, self.height),
+        };
+        let bytes = u64::from(width)
+            .saturating_mul(u64::from(height))
             .saturating_mul(u64::from(bytes_per_pixel));
         let buffer = device.create_buffer(&GpuBufferDesc::new(
             "frame-readback",
@@ -1127,6 +1188,7 @@ impl GpuFrame {
             self.rt1,
             self.rt2,
             self.depth,
+            self.shadow,
             self.ssao,
             self.hdr,
             self.bloom,
@@ -1143,6 +1205,7 @@ impl GpuFrame {
         history: ImageId,
         output: ImageId,
         target: Option<ImageId>,
+        has_scene: bool,
     ) -> Result<RenderGraph, RhiError> {
         let key = |image: ImageId| GraphImageKey(image.0);
         let mut graph = RenderGraph::new();
@@ -1150,6 +1213,9 @@ impl GpuFrame {
         let mut images = vec![
             self.rt0, self.rt1, self.rt2, self.depth, self.ssao, self.hdr, self.bloom,
         ];
+        if has_scene {
+            images.push(self.shadow);
+        }
         if self.features.taa {
             images.push(self.tonemap);
             images.push(history);
@@ -1171,6 +1237,10 @@ impl GpuFrame {
                 .add_pass(pass)
                 .map_err(|error| RhiError::validation(format!("frame graph: {error}")))
         };
+        if has_scene {
+            // Тени (ADR-0050): depth-only, camera-relative light space.
+            add(GraphPass::new("frame.shadow", PassKind::Graphics).depth(key(self.shadow)))?;
+        }
         add(GraphPass::new("frame.gbuffer", PassKind::Graphics)
             .color(key(self.rt0))
             .color(key(self.rt1))
@@ -1276,27 +1346,34 @@ fn present_formats(format: TextureFormat) -> Result<&'static [TextureFormat], Rh
     }
 }
 
-/// Описание геометрии сцены для G-buffer-прохода.
+/// Описание геометрии сцены для G-buffer- и shadow-проходов.
 struct SceneDraw {
     pipeline: PipelineId,
+    shadow_pipeline: PipelineId,
     set: DescriptorSetId,
     vertices: u32,
     instances: u32,
     push: [u8; FRAME_PUSH_CONSTANT_BYTES as usize],
+    shadow_push: [u8; FRAME_PUSH_CONSTANT_BYTES as usize],
 }
 
-/// Рисует инстансы сцены через vertex pulling (ADR-0047).
+/// Рисует инстансы сцены через vertex pulling (ADR-0047/0050).
+#[allow(clippy::too_many_arguments)]
 fn draw_geometry(
     commands: &mut dyn CommandBuffer,
-    scene: &SceneDraw,
+    pipeline: PipelineId,
+    set: DescriptorSetId,
+    vertices: u32,
+    instances: u32,
+    push: &[u8],
     pass: &RenderPassDesc,
 ) -> Result<(), RhiError> {
     commands.begin_render_pass(pass)?;
-    if scene.instances > 0 {
-        commands.set_pipeline(scene.pipeline)?;
-        commands.bind_descriptor_set(scene.set)?;
-        commands.push_constants(&scene.push)?;
-        commands.draw(scene.vertices, scene.instances)?;
+    if instances > 0 {
+        commands.set_pipeline(pipeline)?;
+        commands.bind_descriptor_set(set)?;
+        commands.push_constants(push)?;
+        commands.draw(vertices, instances)?;
     }
     commands.end_render_pass()
 }
@@ -1705,6 +1782,41 @@ mod tests {
             .render_scene(&mut device, &FrameParams::default(), &geometry, &camera)
             .unwrap();
         assert_eq!(frame.zones().len(), 3);
+
+        geometry.destroy(&mut device);
+        frame.destroy(&mut device);
+    }
+
+    #[test]
+    fn null_frame_records_shadow_pass() {
+        use crate::render::scene::RenderScene;
+        use crate::rhi::NullDevice;
+        use flux_math::Frustum;
+
+        let mut device = NullDevice::new();
+        let mut geometry = SceneGeometry::new(&mut device, 4).unwrap();
+        let camera = Camera::default();
+        let mut scene = RenderScene::new();
+        let position = Vec3::new(0.0, 0.0, -2.0);
+        scene.push(position, position, 0, 0);
+        scene.extract(
+            1.0,
+            &Frustum::from_view_projection(camera.view_projection()),
+        );
+        geometry.upload(&mut device, &scene).unwrap();
+
+        let mut frame = GpuFrame::with_features(&mut device, 8, 8, FrameFeatures::none()).unwrap();
+        frame
+            .render_scene(&mut device, &FrameParams::default(), &geometry, &camera)
+            .unwrap();
+        let shadow = frame.readback(&mut device, FrameStage::Shadow).unwrap();
+        assert_eq!(
+            shadow.len(),
+            (SHADOW_MAP_SIZE * SHADOW_MAP_SIZE * 4) as usize
+        );
+        // Null отдаёт нули для depth (ADR-0039); содержимое проверяет
+        // Vulkan-тест, здесь — размер и отсутствие ошибок RHI.
+        assert!(shadow.iter().all(|byte| *byte == 0));
 
         geometry.destroy(&mut device);
         frame.destroy(&mut device);

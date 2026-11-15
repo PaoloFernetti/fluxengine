@@ -9,17 +9,29 @@
 //! позицией камеры, а view-матрица — только поворот. Материалы пока
 //! процедурные (палитра-заглушка), пока нет ресурсов материалов.
 
-use flux_math::Mat4;
+use flux_math::{Mat4, Vec3, Vec4};
 
 use super::gbuffer::GbufferLayout;
 use super::scene::RenderScene;
 use crate::rhi::{
-    BindingKind, BufferId, BufferUsage, DescriptorBinding, DescriptorSetDesc, DescriptorSetId,
-    DescriptorWrite, GpuBufferDesc, PipelineDesc, PipelineId, RhiDevice, RhiError, TextureFormat,
+    BindingKind, BufferId, BufferUsage, DepthCompare, DescriptorBinding, DescriptorSetDesc,
+    DescriptorSetId, DescriptorWrite, GpuBufferDesc, PipelineDesc, PipelineId, RhiDevice, RhiError,
+    TextureFormat,
 };
 
 const SCENE_VS: &[u8] = include_bytes!("../../shaders/compiled/scene.vert.spv");
 const SCENE_GBUFFER_FS: &[u8] = include_bytes!("../../shaders/compiled/scene_gbuffer.frag.spv");
+const SHADOW_VS: &[u8] = include_bytes!("../../shaders/compiled/shadow_scene.vert.spv");
+const SHADOW_FS: &[u8] = include_bytes!("../../shaders/compiled/shadow.frag.spv");
+
+/// Сторона shadow map (ADR-0050).
+pub const SHADOW_MAP_SIZE: u32 = 512;
+
+/// Направление света по умолчанию (camera-relative, сверху-сбоку).
+pub const SHADOW_LIGHT_DIR: Vec3 = Vec3::new(0.5, -1.0, 0.3);
+
+/// Полуразмер ортопроекции света вокруг камеры.
+pub const SHADOW_EXTENT: f32 = 12.0;
 
 /// Байт на вершину: `position.xyz` + `normal.xyz`.
 pub const SCENE_VERTEX_BYTES: u64 = 6 * 4;
@@ -160,6 +172,7 @@ pub struct SceneGeometry {
     staging: BufferId,
     set: DescriptorSetId,
     pipeline: PipelineId,
+    shadow_pipeline: PipelineId,
     capacity: usize,
     instance_count: u32,
 }
@@ -207,6 +220,15 @@ impl SceneGeometry {
                 .with_bindings(&SCENE_BINDINGS)
                 .with_push_constants(SCENE_PUSH_CONSTANT_BYTES),
         )?;
+        // Тени (ADR-0050): depth-only, Reversed-Z — ближе к свету больше.
+        let shadow_pipeline = device.create_pipeline(
+            &PipelineDesc::graphics("scene-shadow", SHADOW_VS, SHADOW_FS)
+                .with_depth_format(TextureFormat::D32Float)
+                .with_vertex_stride(0)
+                .with_bindings(&SCENE_BINDINGS)
+                .with_push_constants(SCENE_PUSH_CONSTANT_BYTES)
+                .with_depth_state(DepthCompare::GreaterOrEqual, true),
+        )?;
         let set = device.create_descriptor_set(
             &DescriptorSetDesc::new("scene-geometry").with_bindings(&SCENE_BINDINGS),
         )?;
@@ -224,6 +246,7 @@ impl SceneGeometry {
             staging,
             set,
             pipeline,
+            shadow_pipeline,
             capacity,
             instance_count: 0,
         })
@@ -251,6 +274,12 @@ impl SceneGeometry {
     #[must_use]
     pub fn pipeline(&self) -> PipelineId {
         self.pipeline
+    }
+
+    /// Pipeline depth-only прохода теней (ADR-0050).
+    #[must_use]
+    pub fn shadow_pipeline(&self) -> PipelineId {
+        self.shadow_pipeline
     }
 
     /// Дескрипторный набор с вершинами и инстансами.
@@ -324,6 +353,7 @@ impl SceneGeometry {
     /// Освобождает pipeline, набор и буферы.
     pub fn destroy(self, device: &mut dyn RhiDevice) {
         let _ = device.destroy_pipeline(self.pipeline);
+        let _ = device.destroy_pipeline(self.shadow_pipeline);
         let _ = device.destroy_descriptor_set(self.set);
         let _ = device.destroy_buffer(self.vertices);
         let _ = device.destroy_buffer(self.instances);
@@ -344,6 +374,40 @@ impl SceneInstance {
             _padding: [0.0; 3],
         }
     }
+}
+
+/// Camera-relative light view-projection для shadow map (ADR-0050).
+///
+/// Инстансы уже вычтены позицией камеры, поэтому ортопроекция строится
+/// вокруг начала координат: при уходе камеры от world origin точность не
+/// теряется. Глубина — Reversed-Z (`near → 1`, `far → 0`), как у камеры
+/// (ADR-0008): RHI очищает depth в `0.0`, поэтому PSO теней использует
+/// `GreaterOrEqual`, а ближе к свету — больше z.
+#[must_use]
+pub fn shadow_view_projection(light_dir: Vec3) -> Mat4 {
+    let direction = if light_dir.length_squared() > 0.0 {
+        light_dir.normalize()
+    } else {
+        -Vec3::Y
+    };
+    // При взгляде строго вдоль Y опорный вектор Y вырожден.
+    let up = if direction.y.abs() > 0.99 {
+        Vec3::Z
+    } else {
+        Vec3::Y
+    };
+    let eye = -direction * SHADOW_EXTENT;
+    let view = Mat4::look_at_rh(eye, Vec3::ZERO, up);
+    // Reversed-Z ортопроекция: x/y ∈ [-1, 1], z = z_view / (2E) + 1.
+    let xy = 1.0 / SHADOW_EXTENT;
+    let z = 1.0 / (SHADOW_EXTENT * 2.0);
+    let projection = Mat4::from_cols(
+        Vec4::new(xy, 0.0, 0.0, 0.0),
+        Vec4::new(0.0, xy, 0.0, 0.0),
+        Vec4::new(0.0, 0.0, z, 0.0),
+        Vec4::new(0.0, 0.0, 1.0, 1.0),
+    );
+    projection * view
 }
 
 /// Push constants геометрии: view-projection (column-major).
@@ -409,6 +473,20 @@ mod tests {
             ]);
             assert_eq!(decoded, *value);
         }
+    }
+
+    #[test]
+    fn shadow_view_projection_covers_origin() {
+        let view_projection = shadow_view_projection(SHADOW_LIGHT_DIR);
+        let ndc = view_projection.project_point3(Vec3::ZERO);
+        assert!(ndc.x.abs() < 1.0, "x={}", ndc.x);
+        assert!(ndc.y.abs() < 1.0, "y={}", ndc.y);
+        assert!(ndc.z > 0.0 && ndc.z < 1.0, "z={}", ndc.z);
+        // Матрица не зависит от позиции камеры: инстансы camera-relative.
+        // Дальше от света = смещение вдоль направления света (Reversed-Z:
+        // дальше — меньше z).
+        let farther = view_projection.project_point3(SHADOW_LIGHT_DIR.normalize());
+        assert!(farther.z < ndc.z, "дальше от света — меньше z");
     }
 
     #[test]
